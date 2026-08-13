@@ -142,6 +142,91 @@ def find_function(code, bare, name):
     return None
 
 
+def notes_section(txt, num):
+    m = re.search(r'^##\s*§' + str(num) + r'\b.*?$(.*?)(?=^##\s*§|\Z)', txt, re.M | re.S)
+    return m.group(1) if m else ''
+
+
+def check_notes(path):
+    """Z-проверки: реально ли прочитан макет и закрыт ли реестр.
+
+    Гоняются автоматически, если рядом с <name>.chart.js лежит <name>.NOTES.md.
+    Смысл: число M в NOTES §2 должно быть ИЗМЕРЕНО, а не вписано на глаз —
+    иначе «покрыто M из M» доказывает само себя и макет читается наполовину.
+    """
+    base = re.sub(r'\.chart\.js$', '', path)
+    notes_path = base + '.NOTES.md'
+    html_path = base + '.html'
+    if not os.path.isfile(notes_path):
+        return
+    txt = open(notes_path, encoding='utf-8', errors='replace').read()
+
+    real = None
+    if os.path.isfile(html_path):
+        with open(html_path, encoding='utf-8', errors='replace') as fh:
+            real = sum(1 for _ in fh)
+
+    s2 = notes_section(txt, 2)
+    mm = re.search(r'M\s*=\s*\*{0,2}\s*(\d+)', s2)
+    claimed = int(mm.group(1)) if mm else None
+
+    if claimed is None:
+        add('Z1', False, '', warn=True,
+            bad='NOTES §2 не заполнен — полнота чтения макета не доказана')
+        return
+    if real is None:
+        add('Z1', False, '', warn=True,
+            bad='нет ' + os.path.basename(html_path) + ' — M=' + str(claimed) + ' не с чем сверить')
+    else:
+        add('Z1', claimed == real,
+            'NOTES §2: M=' + str(claimed) + ' совпадает с ' + os.path.basename(html_path),
+            bad='NOTES §2 заявляет M=' + str(claimed) + ', а в '
+                + os.path.basename(html_path) + ' реально ' + str(real)
+                + ' строк — макет прочитан не полностью, ' + str(real - claimed)
+                + ' строк не открывалось')
+
+    # Диапазоны обязаны покрыть 1..real без дыр.
+    target = real if real is not None else claimed
+    spans = []
+    for mr in re.finditer(r'(\d+)\s*[-–—]\s*(\d+)', s2):
+        a, b = int(mr.group(1)), int(mr.group(2))
+        if a <= b:
+            spans.append((a, b))
+    if spans:
+        covered, cur = [], None
+        for a, b in sorted(spans):
+            if cur and a <= cur[1] + 1:
+                cur = (cur[0], max(cur[1], b))
+            else:
+                if cur:
+                    covered.append(cur)
+                cur = (a, b)
+        covered.append(cur)
+        gaps = []
+        pos = 1
+        for a, b in covered:
+            if a > pos:
+                gaps.append(str(pos) + '-' + str(a - 1))
+            pos = max(pos, b + 1)
+        if pos <= target:
+            gaps.append(str(pos) + '-' + str(target))
+        add('Z1b', not gaps, 'диапазоны NOTES §2 покрывают 1..' + str(target) + ' без дыр',
+            bad='непрочитанные строки макета: ' + ', '.join(gaps[:4]))
+
+    # §1: реестр не должен содержать незакрытых строк.
+    s1 = notes_section(txt, 1)
+    open_rows = re.findall(r'^\|[^|]*\|[^|]*\|.*?\|\s*(TODO|ASK)\s*\|', s1, re.M)
+    add('Z2', not open_rows, 'реестр NOTES §1 закрыт',
+        bad='в реестре NOTES §1 осталось незакрытых строк: ' + str(len(open_rows))
+            + ' (TODO/ASK) — элементы макета не перенесены')
+
+    # §5: все блоки DONE.
+    s5 = notes_section(txt, 5)
+    undone = re.findall(r'^\|\s*[1-7]\s*\|[^|]*\|\s*(TODO|DOING)\s*\|', s5, re.M)
+    add('Z3', not undone, 'NOTES §5: все блоки DONE',
+        bad='в NOTES §5 блоков не DONE: ' + str(len(undone)))
+
+
 def main():
     args = [a for a in sys.argv[1:]]
     flags = set(a for a in args if a.startswith('--'))
@@ -376,8 +461,15 @@ def main():
             'тултип монтируется в body', warn=True,
             bad='тултип не в body — будет обрезан overflow (RETRO 7)')
         if html_body is not None:
-            add('T1', not re.search(r'-tip', html_body),
-                'тултип вне пересобираемой разметки',
+            # Узел тултипа в разметке — это класс *-tip. Атрибуты data-tip/aria-tip
+            # это делегирование событий, скилл сам его рекомендует: не путать.
+            tip_nodes = []
+            for mt in re.finditer(r'-tip\b', html_body):
+                pre = html_body[max(0, mt.start() - 8):mt.start()]
+                if re.search(r'(?:data|aria)$', pre):
+                    continue
+                tip_nodes.append(line_of(html_body, mt.start()))
+            add('T1', not tip_nodes, 'тултип вне пересобираемой разметки',
                 bad='узел тултипа в buildHTML() — innerHTML убьёт его (RETRO 19)')
         if render_body is not None:
             add('T2', 'createElement' not in render_body,
@@ -519,6 +611,8 @@ def main():
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
         add('M4b', not todo, 'нет незакрытых TODO',
             bad='остались плейсхолдеры → строки ' + ','.join(map(str, todo[:6])))
+        # ══ Z. Полнота чтения макета (по <name>.NOTES.md рядом) ══
+        check_notes(path)
 
     # ── отчёт ──
     w = max(len(c) for c, _, _ in R)
