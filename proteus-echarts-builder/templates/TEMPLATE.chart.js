@@ -3,20 +3,25 @@
 // ============================================================================
 // КОНТРАКТ PROTEUS:
 //   ECharts = только холст. Вся визуализация - HTML/CSS/SVG в overlay.
-//   Хост = ПОСЛЕДНИЙ [_echarts_instance_]. Canvas прячем. Overlay - appendChild.
-//   В САМОМ КОНЦЕ ФАЙЛА, ГЛОБАЛЬНО: option = {...} с пустым scatter.
+//   Хост = ПОСЛЕДНИЙ [_echarts_instance_]. Canvas прячем. Overlay - appendChild.
+//   В САМОМ КОНЦЕ ФАЙЛА, ГЛОБАЛЬНО: option = {...} с пустым scatter.
 //
 // ЗАПРЕЩЕНО: backticks/template-literals, стрелочные функции, let/const,
 //   document.getElementById (только overlay.querySelector), console.log в итоге,
 //   addEventListener внутри тела render(), обращение к option из catch,
-//   var P = '.' + CFG.ns в buildHTML (точка только в buildCSS).
+//   мутация option после присваивания, var P = '.' + CFG.ns в buildHTML
+//   (точка только в buildCSS).
 // ОБЯЗАТЕЛЬНО: все 7 блоков ниже, в таком порядке, без перенумерации.
-// ОБЯЗАТЕЛЬНО: вызов render(); в теле mount() — без него overlay пустой.
+// ОБЯЗАТЕЛЬНО: вызов render(); в теле mount() — без него overlay пустой.
+//
+// ВЫЧИСЛЕНИЯ ЖИВУТ ЗДЕСЬ, А НЕ В SQL. Проценты, дельты, ранги, накопительные
+//   итоги, сортировка и форматирование считаются в buildModel() (БЛОК 3).
+//   SQL отдаёт сырые строки — базу не нагружаем.
 // ============================================================================
 
 // ---------- БЛОК 1: CFG ----------
 // fields - ТОЛЬКО реальные имена колонок из SQL пользователя.
-// Нет поля в SQL - СПРОСИ, не выдумывай и не хардкодь значения.
+// Нет поля в SQL - СПРОСИ, не выдумывай и не хардкодь значения.
 // Все цвета/шрифты/отступы из макета — только здесь, не в разметке.
 var CFG = {
   ns: 'pvt',                  // ПРЕФИКС всех CSS-классов и класса overlay
@@ -25,9 +30,11 @@ var CFG = {
   // СНИМОК или ДИНАМИКА. 'snapshot' = состояние на текущую дату,
   // поле-период НЕ НУЖНО и спрашивать про дату ЗАПРЕЩЕНО.
   mode: 'snapshot',           // 'snapshot' | 'timeseries'
-  colors: {},                 // [ЗАПОЛНИ] из макета
+  colors: {
+    bg: '#fff'                // фон overlay; [ЗАПОЛНИ] остальные из макета
+  },
   fonts: {
-    // ЕДИНЫЙ стек для ВСЕГО виджета, включая тултип в body.
+    // ЕДИНЫЙ стек для ВСЕГО виджета, включая тултип в body.
     // Шрифт не наследуется в body — его НАДО задать явно в правиле тултипа.
     family: '-apple-system,"Segoe UI",Roboto,Arial,sans-serif'
     // [ЗАПОЛНИ] размеры из макета (px)
@@ -40,6 +47,8 @@ var CFG = {
 var rawData = (typeof data !== 'undefined' && Array.isArray(data)) ? data : [];
 
 // Состояние переживает перерисовку Proteus.
+// Для таблиц с поиском/сортировкой/пагинацией имена ключей бери из TABLES.md,
+// чтобы правки разных сессий не расходились.
 if (!window.__pvtState) window.__pvtState = {};
 var __S = window.__pvtState;
 if (!__S[CFG.ns]) __S[CFG.ns] = { tip: null };  // [ЗАПОЛНИ] остальные ключи
@@ -50,13 +59,19 @@ function esc(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
+// Числа из BI приходят и числом, и строкой с пробелами-разрядами или запятой.
 function num(v) {
   if (v === null || v === undefined || v === '') return null;
-  var n = Number(String(v).replace(',', '.'));
+  if (typeof v === 'number') return isNaN(v) ? null : v;
+  var s = String(v).replace(/[\s ]/g, '');
+  // '1,5' -> дробная запятая; '1,234.5' -> запятая это разряды.
+  if (s.indexOf(',') > -1 && s.indexOf('.') === -1) s = s.replace(/,/g, '.');
+  else s = s.replace(/,/g, '');
+  var n = Number(s);
   return isNaN(n) ? null : n;
 }
-// Универсальный парсер даты: epoch-ms, epoch-s, 'YYYY-MM-DD', 'YYYY-MM'.
-// Нужен всегда: DATETIME из Proteus приходит числом, а не строкой из UI.
+// Универсальный парсер даты: epoch-ms, epoch-s, 'YYYY-MM-DD', 'YYYY-MM'.
+// Нужен всегда: DATETIME из Proteus приходит числом, а не строкой из UI.
 function toDate(raw) {
   if (raw === null || raw === undefined || raw === '') return null;
   var s = String(raw).trim(), d = null;
@@ -73,6 +88,8 @@ function toDate(raw) {
 
 // ---------- БЛОК 3: ТРАНСФОРМАЦИЯ ДАННЫХ ----------
 // rawData -> структура, удобная для рендера. Только чтение CFG.fields.
+// ЗДЕСЬ считается ВСЁ производное: агрегация, доли, дельты, ранги,
+// накопительные итоги, сортировка. В SQL этого быть не должно.
 function buildModel() {
   // [ЗАПОЛНИ] группировка/агрегация/сортировка по rawData
   return { rows: [] };
@@ -89,8 +106,8 @@ function cssColor(c) {
 }
 
 // ---------- БЛОК 5: РАЗМЕТКА (<style> + HTML) ----------
-// КАЖДЫЙ селектор начинается с .<ns>- или с .<ns>-root - иначе стили
-// протекут в интерфейс Proteus. НИКАКИХ голых div/table/th/button.
+// КАЖДЫЙ селектор начинается с .<ns>- или с .<ns>-root - иначе стили
+// протекут в интерфейс Proteus. НИКАКИХ голых div/table/th/button.
 // Стили из макета переносятся СЮДА ЦЕЛИКОМ, а не выбрасываются.
 function buildCSS() {
   var P = '.' + CFG.ns;
@@ -99,8 +116,8 @@ function buildCSS() {
     P + '-root{width:100%;height:100%;box-sizing:border-box;'
             + 'font-family:' + CFG.fonts.family + ';}',
     P + '-root *{box-sizing:border-box;font-family:inherit;}',
-    // ТУЛТИП живёт В BODY, вне -root — шрифт ему НЕ наследуется.
-    // Повторяем font-family и position:fixed явно, иначе будет другой шрифт.
+    // ТУЛТИП живёт В BODY, вне -root — шрифт ему НЕ наследуется.
+    // Повторяем font-family и position:fixed явно, иначе будет другой шрифт.
     P + '-tip{position:fixed;z-index:99999;pointer-events:none;opacity:0;'
            + 'font-family:' + CFG.fonts.family + ';box-sizing:border-box;'
            + 'transition:opacity .08s;}',
@@ -109,6 +126,7 @@ function buildCSS() {
   ].join('');
 }
 // Только конкатенация строк. Все данные через esc().
+// ВНИМАНИЕ: здесь префикс БЕЗ точки. var P = '.' + CFG.ns дал бы class=".pvt-root".
 function buildHTML() {
   if (!MODEL.rows.length) {
     return buildCSS() + '<div class="' + CFG.ns + '-root">' + esc(CFG.text.noData) + '</div>';
@@ -133,14 +151,15 @@ function buildHTML() {
 
     var overlay = document.createElement('div');
     overlay.className = CFG.ns + '-overlay';
-    overlay.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;z-index:10;background:#fff;overflow:auto;box-sizing:border-box;';
+    overlay.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;'
+      + 'z-index:10;overflow:auto;box-sizing:border-box;background:' + CFG.colors.bg + ';';
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     host.appendChild(overlay);
 
     // ── ТУЛТИП ──
-    // Создаётся РОВНО ОДИН РАЗ и кэшируется в tipEl.
-    // НИКОГДА не создавай его внутри render() и НИКОГДА не клади
-    // его разметку в buildHTML(): innerHTML убьёт узел, и тултип перестанет
+    // Создаётся РОВНО ОДИН РАЗ и кэшируется в tipEl.
+    // НИКОГДА не создавай его внутри render() и НИКОГДА не клади
+    // его разметку в buildHTML(): innerHTML убьёт узел, и тултип перестанет
     // работать после первого же перерисовывания.
     var tipEl = null;
     function getTip() {
@@ -157,7 +176,8 @@ function buildHTML() {
     // Показ/скрытие тултипа НЕ требует полного render():
     // тултип лежит в body с position:fixed: координаты getBoundingClientRect()
     // используются КАК ЕСТЬ. Не вычитать rect корня/overlay; клампинг только
-    // по window.innerWidth / window.innerHeight, не по clientWidth контейнера.
+    // по window.innerWidth / window.innerHeight, не по clientWidth контейнера.
+    // Не хватает места справа — рисуй слева от цели, снизу — сверху.
     function renderTip() {
       var tip = getTip();
       if (!state.tip) { tip.style.opacity = '0'; tip.style.display = 'none'; return; }
@@ -167,14 +187,16 @@ function buildHTML() {
     }
 
     // render ТОЛЬКО пересобирает разметку. Делегированные обработчики
-    // навешиваются ОДИН РАЗ СНАРУЖИ render(): overlay не пересоздаётся.
-    // Любой addEventListener внутри render() ЗАПРЕЩЁН — он создаёт дубли.
+    // навешиваются ОДИН РАЗ СНАРУЖИ render(): overlay не пересоздаётся.
+    // Любой addEventListener внутри render() ЗАПРЕЩЁН — он создаёт дубли.
     function render() {
       overlay.innerHTML = buildHTML();
       renderTip();
     }
 
     // [ЗАПОЛНИ] обработчики: hover → renderTip(); click → state + render().
+    // В onOut проверяй e.relatedTarget: переход курсора на ДОЧЕРНИЙ узел той же
+    // цели не должен гасить тултип, иначе он мигает посреди наведения.
     function onOver(e) {}
     function onOut(e) {}
     function onClick(e) {}
@@ -182,21 +204,34 @@ function buildHTML() {
     overlay.addEventListener('mouseover', onOver);
     overlay.addEventListener('mouseout', onOut);
     overlay.addEventListener('click', onClick);
-    window.addEventListener('resize', function() { if (state.tip) renderTip(); });
-    // Escape при необходимости вешай здесь один раз, не внутри render().
+
+    // Глобальные слушатели переживают перезапуск скрипта и накапливаются.
+    // Старый снимаем ЯВНО, ссылку держим в state. Escape вешай здесь же,
+    // тем же способом, и никогда не внутри render().
+    if (state.onWinResize) window.removeEventListener('resize', state.onWinResize);
+    state.onWinResize = function () { if (state.tip) renderTip(); };
+    window.addEventListener('resize', state.onWinResize);
 
     render();
 
     // ResizeObserver только правит габариты. НЕ вызывать render() — зациклит.
+    // Старый observer отключаем: иначе он держит удалённый overlay.
     if (typeof ResizeObserver !== 'undefined') {
+      if (state.ro && state.ro.disconnect) state.ro.disconnect();
       var ro = new ResizeObserver(function() {
         overlay.style.width = '100%'; overlay.style.height = '100%';
       });
       ro.observe(host);
+      state.ro = ro;
     }
   } catch (e) {
     // option присваивается позже, в БЛОКЕ 7: из catch к нему не обращаться.
-    var box = document.querySelector('.' + CFG.ns + '-overlay');
+    // Ищем overlay внутри СВОЕГО хоста: на дашборде может быть второй виджет
+    // с тем же ns, и сообщение об ошибке уедет не туда.
+    var box = null;
+    var hs = document.querySelectorAll('[_echarts_instance_]');
+    if (hs && hs.length) box = hs[hs.length - 1].querySelector('.' + CFG.ns + '-overlay');
+    if (!box) box = document.querySelector('.' + CFG.ns + '-overlay');
     if (box) {
       box.innerHTML = '<div style="padding:16px;font:13px -apple-system,Arial,sans-serif;color:#b00020;">'
         + 'Ошибка графика: ' + esc((e && e.message) || e) + '</div>';
@@ -204,8 +239,10 @@ function buildHTML() {
   }
 })();
 
-// ---------- БЛОК 7: ПУСТОЙ OPTION ----------
-// ГЛОБАЛЬНО, В САМОМ КОНЦЕ, ВНЕ функций и IIFE.
+// ---------- БЛОК 7: ПУСТОЙ OPTION ----------
+// ГЛОБАЛЬНО, В САМОМ КОНЦЕ, ВНЕ функций и IIFE.
+// После этого присваивания option не трогать: любая мутация вернёт eCharts
+// к отрисовке своего графика поверх overlay.
 option = {
   animation: false,
   xAxis: { show: false, type: 'value' },
