@@ -226,6 +226,39 @@ def check_notes(path):
     add('Z3', not undone, 'NOTES §5: все блоки DONE',
         bad='в NOTES §5 блоков не DONE: ' + str(len(undone)))
 
+    # §6: открытые хвосты.
+    s6 = notes_section(txt, 6)
+    tails = re.findall(r'^\s*-\s*\[ \]\s*\S', s6, re.M)
+    if tails:
+        add('Z4', False, '', warn=True,
+            bad='в NOTES §6 незакрытых хвостов: ' + str(len(tails))
+                + ' — закрой или проговори их пользователю в финальном ответе')
+
+
+def check_report(path):
+    """Z6: сданный отчёт должен быть по чек-листу скилла, а не в своём формате.
+
+    Реальный случай: агент выдал красивый отчёт из собственных разделов, где не
+    было ни одного ID из SELF_CHECK — то есть чек-лист не проходился вовсе,
+    а «все элементы макета покрыты» стояло при непрочитанной трети макета.
+    """
+    report_path = os.path.join(os.path.dirname(os.path.abspath(path)), 'SELF_CHECK.md')
+    if not os.path.isfile(report_path):
+        return
+    master = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'SELF_CHECK.md')
+    if not os.path.isfile(master) or os.path.samefile(master, report_path):
+        return
+    need = re.findall(r'^- \[ \] ([A-Z]\d+)\.', open(master, encoding='utf-8').read(), re.M)
+    if not need:
+        return
+    rep = open(report_path, encoding='utf-8', errors='replace').read()
+    missing = [c for c in need if not re.search(r'\b' + c + r'\b', rep)]
+    add('Z6', not missing,
+        'отчёт SELF_CHECK.md содержит все ' + str(len(need)) + ' пунктов',
+        bad='в SELF_CHECK.md нет ' + str(len(missing)) + ' из ' + str(len(need))
+            + ' обязательных пунктов (' + ', '.join(missing[:6])
+            + '...) — отчёт написан в своём формате, чек-лист не пройден')
+
 
 def main():
     args = [a for a in sys.argv[1:]]
@@ -526,6 +559,15 @@ def main():
     # ══ M7. Всё data, не data[0] ══
     add('M7', not re.search(r'\bdata\s*\[\s*0\s*\]', bare), 'читается весь data',
         bad='data[0] — остальные строки потеряны (RETRO 11)')
+    # rawData[0] — та же ошибка в обход M7. Но для агрегатного SQL из одной
+    # строки это норма, поэтому WARN: агент обязан объяснить его одной строкой.
+    first_only = [i for i, l in enumerate(code_lines, 1)
+                  if re.search(r'\brawData\s*\[\s*0\s*\]', l)]
+    if first_only:
+        add('M7c', False, '', warn=True,
+            bad='rawData[0] → строки ' + ','.join(map(str, first_only[:5]))
+                + ': если SQL отдаёт одну агрегатную строку — норма, объясни это; '
+                  'иначе остальные строки молча потеряны (RETRO 11, 41)')
     add('M7b', 'Array.isArray' in bare, 'вход защищён Array.isArray',
         bad='нет Array.isArray — падёт на пустом data')
 
@@ -611,8 +653,9 @@ def main():
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
         add('M4b', not todo, 'нет незакрытых TODO',
             bad='остались плейсхолдеры → строки ' + ','.join(map(str, todo[:6])))
-        # ══ Z. Полнота чтения макета (по <name>.NOTES.md рядом) ══
+        # ══ Z. Полнота чтения макета и формат сдачи ══
         check_notes(path)
+        check_report(path)
 
     # ── отчёт ──
     w = max(len(c) for c, _, _ in R)
