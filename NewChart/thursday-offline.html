@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Четверговая Оффлайн</title>
+
+  <style>
+    .chart-root {
+      --ink: #303033;
+      --muted: #8f8f93;
+      --soft-ink: #5e5e64;
+      --hairline: #c9c9cb;
+      --focus: #595a60;
+      --tip-bg: #ffffff;
+      --tip-ink: #303033;
+      --tip-note: #6a6a70;
+      width: 100%;
+      position: relative;
+      color: var(--ink);
+      background: transparent;
+      font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+
+    .chart-root .chart-stage {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 4px;
+      box-sizing: border-box;
+      background: transparent;
+    }
+
+    .chart-root .segment-body {
+      width: min(100%, 470px);
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0;
+      box-sizing: border-box;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      overflow: visible;
+    }
+
+    .chart-root .segment-header {
+      width: 100%;
+      display: flex;
+      align-items: baseline;
+      justify-content: center;
+      gap: 8px;
+      text-align: center;
+    }
+
+    .chart-root .segment-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 30px;
+      line-height: 1.15;
+      font-weight: 450;
+      letter-spacing: -0.6px;
+    }
+
+    .chart-root .info-button {
+      width: 22px;
+      height: 22px;
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      cursor: pointer;
+      appearance: none;
+      color: #a9a9ad;
+      background: rgba(143, 143, 147, 0.10);
+      border: 0;
+      border-radius: 50%;
+      transition: color 150ms ease, background 150ms ease;
+    }
+
+    .chart-root .info-button:hover,
+    .chart-root .info-button:focus-visible,
+    .chart-root .info-button.is-active {
+      color: #6c6c72;
+      background: rgba(143, 143, 147, 0.20);
+    }
+
+    .chart-root .info-button:focus-visible {
+      outline: 2px solid rgba(89, 90, 96, 0.40);
+      outline-offset: 2px;
+    }
+
+    .chart-root .info-icon {
+      display: block;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 14px;
+      line-height: 1;
+      font-weight: 700;
+      pointer-events: none;
+    }
+
+    .chart-root .kpi {
+      margin-top: 14px;
+      color: var(--ink);
+      font-size: 32px;
+      line-height: 1.05;
+      font-weight: 750;
+      letter-spacing: -0.9px;
+      text-align: center;
+      cursor: default;
+    }
+
+    .chart-root .kpi-caption {
+      margin-top: 3px;
+      color: var(--soft-ink);
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 450;
+      text-align: center;
+    }
+
+    .chart-root .set-visual {
+      width: 100%;
+      margin-top: 22px;
+      position: relative;
+    }
+
+    .chart-root .set-row {
+      width: 100%;
+      position: relative;
+      height: 56px;
+    }
+
+    .chart-root .set-band {
+      height: 32px;
+      position: absolute;
+      top: 24px;
+      display: flex;
+      align-items: center;
+      box-sizing: border-box;
+      padding: 0 11px;
+      cursor: pointer;
+      appearance: none;
+      color: inherit;
+      font: inherit;
+      border: 0;
+      border-radius: 7px;
+      box-shadow: 0 0 0 0 rgba(89, 90, 96, 0);
+      transition: opacity 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+    }
+
+    .chart-root .set-band.is-left { left: 0; justify-content: flex-start; }
+    .chart-root .set-band.is-right { right: 0; justify-content: flex-end; }
+
+    .chart-root .set-band:hover,
+    .chart-root .set-band:focus-visible {
+      filter: brightness(0.96);
+      box-shadow: 0 0 0 3px rgba(89, 90, 96, 0.14);
+      outline: none;
+    }
+
+    .chart-root .set-band.is-selected {
+      box-shadow: 0 0 0 2px var(--focus);
+    }
+
+    .chart-root .set-band.is-muted { opacity: 0.34; }
+
+    .chart-root .set-label {
+      position: absolute;
+      top: 0;
+      color: var(--soft-ink);
+      font-size: 16px;
+      line-height: 1.25;
+      font-weight: 450;
+      pointer-events: none;
+      transition: color 140ms ease, opacity 140ms ease;
+    }
+
+    .chart-root .set-label.is-left { left: 1px; }
+    .chart-root .set-label.is-right { right: 1px; }
+    .chart-root .set-label.is-strong { color: var(--ink); font-weight: 600; }
+    .chart-root .set-label.is-muted { opacity: 0.34; }
+
+    .chart-root .set-value {
+      color: #55545b;
+      font-size: 18px;
+      line-height: 1;
+      font-weight: 550;
+      pointer-events: none;
+    }
+
+    .chart-root .overlap-zone {
+      position: absolute;
+      top: 24px;
+      bottom: 24px;
+      box-sizing: border-box;
+      border-left: 1px dashed var(--hairline);
+      border-right: 1px dashed var(--hairline);
+      background: rgba(143, 143, 147, 0.07);
+      pointer-events: none;
+    }
+
+    .chart-root .overlap-badge {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 4px 11px;
+      white-space: nowrap;
+      color: var(--ink);
+      background: #ffffff;
+      border: 1px solid var(--hairline);
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 650;
+      pointer-events: auto;
+      cursor: pointer;
+      transition: box-shadow 140ms ease, border-color 140ms ease;
+    }
+
+    .chart-root .overlap-badge:hover,
+    .chart-root .overlap-badge:focus-visible {
+      border-color: #a9a9ad;
+      box-shadow: 0 0 0 3px rgba(89, 90, 96, 0.12);
+      outline: none;
+    }
+
+    .chart-root .chart-tooltip {
+      width: max-content;
+      min-width: 260px;
+      max-width: min(360px, calc(100vw - 20px));
+      position: absolute;
+      z-index: 60;
+      padding: 9px 12px;
+      box-sizing: border-box;
+      pointer-events: none;
+      color: var(--tip-ink);
+      background: var(--tip-bg);
+      border: 1px solid rgba(0, 0, 0, 0.06);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(24, 24, 28, 0.14),
+        0 1px 3px rgba(24, 24, 28, 0.10);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .chart-root .chart-tooltip[hidden] { display: none; }
+
+    .chart-root .tooltip-title {
+      display: block;
+      margin: 0;
+      color: var(--tip-ink);
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 650;
+    }
+
+    .chart-root .tooltip-value {
+      display: block;
+      margin: 3px 0 0;
+      color: var(--tip-ink);
+      font-size: 13px;
+      line-height: 1.3;
+      font-weight: 700;
+    }
+
+    .chart-root .tooltip-note {
+      display: block;
+      margin: 3px 0 0;
+      color: var(--tip-note);
+      font-size: 11px;
+      line-height: 1.4;
+      font-weight: 400;
+    }
+
+    .chart-root .empty-state {
+      width: 100%;
+      padding: 20px;
+      box-sizing: border-box;
+      color: var(--soft-ink);
+      text-align: center;
+      background: transparent;
+    }
+
+    @media (max-width: 620px) {
+      .chart-root .segment-title { font-size: 23px; }
+      .chart-root .kpi { font-size: 27px; }
+      .chart-root .set-label { font-size: 14px; }
+      .chart-root .set-value { font-size: 16px; }
+      .chart-root .chart-tooltip { min-width: 220px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .chart-root .info-button,
+      .chart-root .set-band,
+      .chart-root .set-label,
+      .chart-root .overlap-badge { transition: none; }
+    }
+  </style>
+</head>
+
+<body style="margin:0; padding:24px; background:#f5f5f6;">
+  <div class="chart-root"></div>
+
+  <script>
+    var data = [
+      {
+        snapshot_dt: "2026-07-01",
+        segment_id: "thursday_offline",
+        segment_nm: "Четверговая Оффлайн",
+        total_cnt: 13,
+        struct_key: "management",
+        struct_nm: "Управленческая структура",
+        struct_cnt: 10,
+        struct_color: "#f7c4ce",
+        rule_txt: "Сотрудники группы офлайн-четверговой на дату среза. При участии в нескольких группах приоритет: Оффлайн → Онлайн → Management Meeting."
+      },
+      {
+        snapshot_dt: "2026-07-01",
+        segment_id: "thursday_offline",
+        segment_nm: "Четверговая Оффлайн",
+        total_cnt: 13,
+        struct_key: "product_catalog",
+        struct_nm: "Каталог продуктов",
+        struct_cnt: 9,
+        struct_color: "#dfc3f6",
+        rule_txt: "Сотрудники группы офлайн-четверговой на дату среза. При участии в нескольких группах приоритет: Оффлайн → Онлайн → Management Meeting."
+      }
+    ];
+
+    var state = {
+      segment_id: "thursday_offline",
+      selected_key: null,
+      tooltip: null
+    };
+
+    var root = document.querySelector(".chart-root");
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function safeColor(value) {
+      var color = String(value || "");
+      return /^#[0-9a-fA-F]{6}$/.test(color) ? color : "#d8d8dc";
+    }
+
+    function formatPercent(value) {
+      var rounded = Math.round(value * 10) / 10;
+      return String(rounded).replace(".0", "") + "%";
+    }
+
+    function formatDate(value) {
+      var parts = String(value || "").split("-");
+      if (parts.length !== 3) { return String(value || ""); }
+      return parts[2] + "." + parts[1] + "." + parts[0];
+    }
+
+    function employeeWord(value) {
+      var number = Math.abs(Number(value));
+      var lastTwo = number % 100;
+      var lastOne = number % 10;
+      if (lastTwo >= 11 && lastTwo <= 14) { return "сотрудников"; }
+      if (lastOne === 1) { return "сотрудник"; }
+      if (lastOne >= 2 && lastOne <= 4) { return "сотрудника"; }
+      return "сотрудников";
+    }
+
+    function getRows() {
+      return data.filter(function (row) {
+        return row.segment_id === state.segment_id;
+      });
+    }
+
+    function getRowByKey(key) {
+      var rows = getRows();
+      for (var index = 0; index < rows.length; index += 1) {
+        if (rows[index].struct_key === key) { return rows[index]; }
+      }
+      return null;
+    }
+
+    function getOverlap() {
+      var rows = getRows();
+      if (rows.length < 2) { return 0; }
+      var total = Number(rows[0].total_cnt) || 0;
+      var sum = rows.reduce(function (acc, row) {
+        return acc + (Number(row.struct_cnt) || 0);
+      }, 0);
+      var overlap = sum - total;
+      return overlap < 0 ? 0 : overlap;
+    }
+
+    function getTrigger(node) {
+      var current = node;
+      while (current && current !== root) {
+        if (
+          current.hasAttribute &&
+          (current.hasAttribute("data-tip") || current.hasAttribute("data-action"))
+        ) {
+          return current;
+        }
+        current = current.parentNode;
+      }
+      return null;
+    }
+
+    function createTooltipState(trigger, pinned) {
+      var hostRect = root.getBoundingClientRect();
+      var rect = trigger.getBoundingClientRect();
+
+      return {
+        kind: trigger.getAttribute("data-tip"),
+        key: trigger.getAttribute("data-key") || null,
+        x: rect.left - hostRect.left + rect.width / 2,
+        y: rect.top - hostRect.top,
+        h: rect.height,
+        pinned: Boolean(pinned)
+      };
+    }
+
+    function positionTooltip(tooltipElement) {
+      var hostWidth = root.clientWidth;
+      var bounds = tooltipElement.getBoundingClientRect();
+      var pad = 6;
+      var left = state.tooltip.x - bounds.width / 2;
+      var top = state.tooltip.y - bounds.height - 8;
+
+      if (left + bounds.width > hostWidth - pad) {
+        left = hostWidth - bounds.width - pad;
+      }
+      if (left < pad) { left = pad; }
+      if (top < pad) { top = state.tooltip.y + state.tooltip.h + 8; }
+
+      tooltipElement.style.left = left + "px";
+      tooltipElement.style.top = top + "px";
+    }
+
+    function render(tooltipOnly) {
+      if (tooltipOnly) {
+        var tooltipElement = root.querySelector(".chart-tooltip");
+        if (!tooltipElement) { return; }
+
+        if (!state.tooltip) {
+          tooltipElement.hidden = true;
+          tooltipElement.innerHTML = "";
+          return;
+        }
+
+        var rowsForTip = getRows();
+        if (!rowsForTip.length) {
+          tooltipElement.hidden = true;
+          return;
+        }
+
+        var total = Number(rowsForTip[0].total_cnt) || 0;
+        var tipTitle = "";
+        var tipValue = "";
+        var tipNote = "";
+
+        if (state.tooltip.kind === "info") {
+          tipTitle = "Правило формирования";
+          tipNote = rowsForTip[0].rule_txt;
+        }
+
+        if (state.tooltip.kind === "bar") {
+          var row = getRowByKey(state.tooltip.key);
+          if (!row) {
+            tooltipElement.hidden = true;
+            return;
+          }
+          var share = total ? row.struct_cnt / total * 100 : 0;
+          tipTitle = row.struct_nm;
+          tipValue = row.struct_cnt + " " + employeeWord(row.struct_cnt);
+          tipNote = formatPercent(share) + " от " + total +
+            " · срез " + formatDate(row.snapshot_dt);
+        }
+
+        if (state.tooltip.kind === "overlap") {
+          var overlapCount = getOverlap();
+          var overlapShare = total ? overlapCount / total * 100 : 0;
+          tipTitle = "Пересечение структур";
+          tipValue = overlapCount + " " + employeeWord(overlapCount);
+          tipNote = "В обеих структурах · " + formatPercent(overlapShare) +
+            " от " + total;
+        }
+
+        tooltipElement.innerHTML =
+          '<span class="tooltip-title">' + escapeHtml(tipTitle) + "</span>" +
+          (tipValue
+            ? '<span class="tooltip-value">' + escapeHtml(tipValue) + "</span>"
+            : "") +
+          '<span class="tooltip-note">' + escapeHtml(tipNote) + "</span>";
+
+        tooltipElement.hidden = false;
+        tooltipElement.style.left = "0px";
+        tooltipElement.style.top = "0px";
+        positionTooltip(tooltipElement);
+
+        return;
+      }
+
+      var rows = getRows();
+
+      if (!rows.length) {
+        root.innerHTML =
+          '<div class="chart-stage">' +
+            '<div class="empty-state">Нет данных для выбранного сегмента</div>' +
+          "</div>" +
+          '<div class="chart-tooltip" role="tooltip" hidden></div>';
+        return;
+      }
+
+      var segment = rows[0];
+      var total = Number(segment.total_cnt) || 0;
+      var overlap = getOverlap();
+      var bandsHtml = "";
+
+      rows.forEach(function (row, index) {
+        var count = Number(row.struct_cnt) || 0;
+        var share = total ? count / total * 100 : 0;
+        var width = Math.max(24, Math.min(100, share));
+        var side = index === 0 ? "is-left" : "is-right";
+        var isSelected = state.selected_key === row.struct_key;
+        var isMuted =
+          state.selected_key !== null && state.selected_key !== row.struct_key;
+
+        bandsHtml +=
+          '<div class="set-row">' +
+            '<span class="set-label ' + side +
+              (isSelected ? " is-strong" : "") +
+              (isMuted ? " is-muted" : "") + '">' +
+              escapeHtml(row.struct_nm) +
+            "</span>" +
+            '<button type="button" ' +
+              'class="set-band ' + side +
+                (isSelected ? " is-selected" : "") +
+                (isMuted ? " is-muted" : "") + '" ' +
+              'data-action="select" data-tip="bar" ' +
+              'data-key="' + escapeHtml(row.struct_key) + '" ' +
+              'aria-pressed="' + String(isSelected) + '" ' +
+              'style="width:' + width + "%;background:" +
+                safeColor(row.struct_color) + ';" ' +
+              'aria-label="' +
+                escapeHtml(
+                  row.struct_nm + ": " + count + " " + employeeWord(count) +
+                  ", " + formatPercent(share) + " от " + total
+                ) +
+              '">' +
+              '<span class="set-value">' + escapeHtml(count) + "</span>" +
+            "</button>" +
+          "</div>";
+      });
+
+      var overlapHtml = "";
+
+      if (rows.length === 2 && overlap > 0 && total) {
+        var leftShare = Math.max(24, Math.min(100, rows[0].struct_cnt / total * 100));
+        var rightShare = Math.max(24, Math.min(100, rows[1].struct_cnt / total * 100));
+        var zoneLeft = 100 - rightShare;
+        var zoneWidth = leftShare - zoneLeft;
+
+        if (zoneWidth > 0) {
+          overlapHtml =
+            '<div class="overlap-zone" style="left:' + zoneLeft +
+              "%;width:" + zoneWidth + '%;">' +
+              '<button type="button" class="overlap-badge" ' +
+                'data-action="overlap" data-tip="overlap" ' +
+                'aria-label="Пересечение структур: ' + overlap + " " +
+                  employeeWord(overlap) + '">' +
+                "∩ " + escapeHtml(overlap) +
+              "</button>" +
+            "</div>";
+        }
+      }
+
+      var infoActive =
+        state.tooltip && state.tooltip.kind === "info" && state.tooltip.pinned;
+
+      root.innerHTML =
+        '<div class="chart-stage">' +
+          '<div class="segment-body" aria-label="' +
+            escapeHtml(segment.segment_nm) + '">' +
+            '<div class="segment-header">' +
+              '<h2 class="segment-title">' +
+                escapeHtml(segment.segment_nm) +
+              "</h2>" +
+              '<button type="button" class="info-button' +
+                (infoActive ? " is-active" : "") + '" ' +
+                'data-action="info" data-tip="info" ' +
+                'aria-label="Правило формирования встречи">' +
+                '<span class="info-icon" aria-hidden="true">i</span>' +
+              "</button>" +
+            "</div>" +
+            '<div class="kpi">' +
+              escapeHtml(total) + " " + escapeHtml(employeeWord(total)) +
+            "</div>" +
+            '<div class="kpi-caption">всего во встрече</div>' +
+            '<div class="set-visual" aria-label="Пересечение структур сотрудников">' +
+              bandsHtml +
+              overlapHtml +
+            "</div>" +
+          "</div>" +
+        "</div>" +
+        '<div class="chart-tooltip" role="tooltip" hidden></div>';
+
+      render(true);
+    }
+
+    root.addEventListener("mouseover", function (event) {
+      var trigger = getTrigger(event.target);
+      if (!trigger || !trigger.getAttribute("data-tip")) { return; }
+      if (state.tooltip && state.tooltip.pinned) { return; }
+      state.tooltip = createTooltipState(trigger, false);
+      render(true);
+    });
+
+    root.addEventListener("mouseout", function (event) {
+      var trigger = getTrigger(event.target);
+      if (!trigger) { return; }
+      if (state.tooltip && state.tooltip.pinned) { return; }
+      state.tooltip = null;
+      render(true);
+    });
+
+    root.addEventListener("click", function (event) {
+      var trigger = getTrigger(event.target);
+
+      if (!trigger) {
+        state.tooltip = null;
+        state.selected_key = null;
+        render();
+        return;
+      }
+
+      var action = trigger.getAttribute("data-action");
+
+      if (action === "info") {
+        var pinnedInfo =
+          state.tooltip && state.tooltip.kind === "info" && state.tooltip.pinned;
+        state.tooltip = pinnedInfo ? null : createTooltipState(trigger, true);
+        render();
+        return;
+      }
+
+      if (action === "select") {
+        var key = trigger.getAttribute("data-key");
+        state.selected_key = state.selected_key === key ? null : key;
+        state.tooltip = createTooltipState(trigger, false);
+        render();
+        return;
+      }
+
+      if (action === "overlap") {
+        var pinnedOverlap =
+          state.tooltip &&
+          state.tooltip.kind === "overlap" &&
+          state.tooltip.pinned;
+        state.tooltip = pinnedOverlap ? null : createTooltipState(trigger, true);
+        render();
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        state.tooltip = null;
+        state.selected_key = null;
+        render();
+      }
+    });
+
+    window.addEventListener("resize", function () {
+      if (state.tooltip) { render(true); }
+    });
+
+    render();
+  </script>
+</body>
+</html>
