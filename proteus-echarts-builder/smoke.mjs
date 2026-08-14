@@ -360,9 +360,25 @@ async function probeTooltips(page, prefix, rootSel) {
 async function main() {
   const chromium = await loadChromium();
   if (!chromium) {
-    console.log('\nplaywright не найден — поведенческая проверка НЕ выполнена.');
-    console.log('Поставь один раз:  npm i -D playwright && npx playwright install chromium');
-    console.log('(или глобально:    npm i -g playwright && npx playwright install chromium)');
+    console.log('\n' + chartPath);
+    console.log('-'.repeat(72));
+    console.log(' -  B0   N/A   playwright не найден — поведенческая проверка ПРОПУЩЕНА');
+    console.log('-'.repeat(72));
+    console.log('ЭТО НЕ ПРОВАЛ ПРОВЕРКИ. Код возврата 2 = «не запускалась»;');
+    console.log('1 = «провалена»; 0 = «пройдена». Сдачу это не блокирует.');
+    console.log('');
+    console.log('Что остаётся в силе: статические проверки validate.py. Класс багов');
+    console.log('«код верный, а на экране пусто» они закрывают частично — T5 (скрытие');
+    console.log('снимается), T6 (hover не пересобирает), S14b (render рисует),');
+    console.log('S18 (состояние связано). Полностью его видит только браузер.');
+    console.log('');
+    console.log('Включить, один раз, ~150 МБ:');
+    console.log('    npm i -D playwright && npx playwright install chromium');
+    console.log('  или глобально:');
+    console.log('    npm i -g playwright && npx playwright install chromium');
+    console.log('');
+    console.log('В отчёте SELF_CHECK проставь B1-B5 = N/A с причиной «нет playwright»');
+    console.log('и скажи об этом пользователю прямо: часть проверок не выполнялась.');
     return 2;
   }
 
