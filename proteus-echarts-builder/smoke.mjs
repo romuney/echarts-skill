@@ -11,6 +11,7 @@
 // код формально верный, а на экране ничего нет (RETRO 44).
 //
 // ЗАПУСК:
+//   node smoke.mjs --env                              # проверка окружения (ШАГ 0)
 //   node smoke.mjs <path>.chart.js
 //   node smoke.mjs <path>.chart.js --mock rows.json   # свои данные вместо авто
 //   node smoke.mjs <path>.chart.js --vs <path>.html   # сверка с макетом
@@ -55,8 +56,42 @@ for (let i = 0; i < argv.length; i++) {
 const quiet = flags.has('--quiet');
 const keep = flags.has('--keep');
 
+// ── --env: проверка окружения ДО начала работы ───────────────────────────────
+// Гоняется на ШАГЕ 0. Уровень проверки — отдельная ось, НЕ связанная с
+// режимами A/B: агент сразу говорит пользователю, будет ли проверка полной
+// (браузерной), и если нет — предлагает установку ПЕРЕД началом работы,
+// а не в момент сдачи (RETRO 50). Ставить пакет можно только после явного «да».
+if (flags.has('--env')) {
+  const chromium = await loadChromium();
+  console.log('Окружение поведенческой проверки (smoke.mjs):');
+  if (!chromium) {
+    console.log(' -  playwright: НЕ НАЙДЕН');
+    console.log('Итог: доступна только статическая проверка validate.py (код 2).');
+    console.log('Полная проверка — ещё и браузерная: монтаж, тултипы в пикселях,');
+    console.log('клики, перезапуск, ресайз. Включается один раз, ~150 МБ:');
+    console.log('    npm i -D playwright && npx playwright install chromium');
+    console.log('  или глобально:');
+    console.log('    npm i -g playwright && npx playwright install chromium');
+    process.exit(2);
+  }
+  try {
+    const b = await chromium.launch();
+    await b.close();
+    console.log(' v  playwright есть, chromium запускается');
+    console.log('Итог: полная браузерная проверка ДОСТУПНА (код 0).');
+    process.exit(0);
+  } catch (e) {
+    console.log(' -  playwright есть, но браузер не запускается: '
+      + String((e && e.message) || e).split('\n')[0]);
+    console.log('Итог: доступна только статическая проверка (код 2). Обычно лечится:');
+    console.log('    npx playwright install chromium');
+    process.exit(2);
+  }
+}
+
 if (!paths.length) {
   console.log('Укажи путь: node smoke.mjs <path>.chart.js [--mock rows.json] [--vs макет.html]');
+  console.log('Проверка окружения без чарта: node smoke.mjs --env');
   process.exit(2);
 }
 const chartPath = path.resolve(paths[0]);
@@ -71,7 +106,8 @@ async function loadChromium() {
     try { return (await import(m)).chromium; } catch { /* дальше */ }
   }
   try {
-    const root = execSync('npm root -g', { encoding: 'utf8' }).trim();
+    const root = execSync('npm root -g',
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
     for (const m of ['playwright', 'playwright-core']) {
       for (const f of ['index.mjs', 'index.js']) {
         const p = path.join(root, m, f);

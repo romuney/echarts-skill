@@ -94,7 +94,21 @@ def main():
         print('validate.py не запустился: ' + str(err))
         rc = 2
 
+    # Уровень проверки объявляется пользователю СРАЗУ, а не при сдаче (RETRO 50).
+    # Результат не влияет на код возврата: болванки готовы в любом случае.
+    env_rc = None
+    try:
+        q = subprocess.run(['node', os.path.join(HERE, 'smoke.mjs'), '--env'],
+                           capture_output=True, text=True, timeout=90)
+        print('\n' + (q.stdout.strip() or q.stderr.strip()))
+        env_rc = q.returncode
+    except (OSError, subprocess.TimeoutExpired) as err:
+        print('\nsmoke.mjs --env не запустился: ' + str(err))
+
     print('\nДальше: СТОП и сообщи пользователю — «болванки готовы, пришли HTML-макет и SQL».')
+    if env_rc == 2:
+        print('Заодно скажи, что браузерная проверка недоступна, и предложи установку')
+        print('командой из блока выше. Ставить — только после явного «да».')
     print('Ничего не заполняй: ни CFG.fields, ни FIELDS.md, ни макет, ни SQL.')
     return rc
 
