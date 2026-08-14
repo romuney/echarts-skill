@@ -48,7 +48,7 @@ const opts = {};
 const paths = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--mock' || a === '--vs') { opts[a.slice(2)] = argv[++i]; continue; }
+  if (a === '--mock' || a === '--vs' || a === '--shots') { opts[a.slice(2)] = argv[++i]; continue; }
   if (a.startsWith('--')) { flags.add(a); continue; }
   paths.push(a);
 }
@@ -237,6 +237,46 @@ const PROBE = `(function () {
     overlayHTML: function (ns) {
       var ov = document.querySelector('.' + ns + '-overlay');
       return ov ? ov.innerHTML : '';
+    },
+    // Инвентарь видимого: то, что можно сравнить у макета и у чарта, не зная
+    // ни их имён классов, ни их данных. Цифры в текстах маскируются (13 -> ##),
+    // поэтому подписи сравниваются, а значения — нет.
+    inventory: function (rootSel) {
+      var root = rootSel ? document.querySelector(rootSel) : document.body;
+      if (!root) return null;
+      var els = slice(root.querySelectorAll('*'));
+      var texts = {}, colors = {}, kinds = {};
+      var colored = 0, buttons = 0, shown = 0;
+      els.forEach(function (el) {
+        var tag = el.tagName.toLowerCase();
+        if (tag === 'style' || tag === 'script') return;
+        var cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden') return;
+        shown++;
+        if (tag === 'button') buttons++;
+        var k = el.getAttribute('data-tip') || el.getAttribute('data-kind')
+                || el.getAttribute('data-action');
+        if (k) kinds[k] = 1;
+        var bg = cs.backgroundColor;
+        var r = el.getBoundingClientRect();
+        if (bg && bg !== 'transparent' && bg.replace(/ /g, '') !== 'rgba(0,0,0,0)'
+            && r.width > 2 && r.height > 2) {
+          colored++;
+          colors[bg] = 1;
+        }
+        var own = '';
+        slice(el.childNodes).forEach(function (n) {
+          if (n.nodeType === 3) own += n.nodeValue;
+        });
+        own = own.replace(/\\s+/g, ' ').trim();
+        if (own) texts[own.replace(/\\d+([.,]\\d+)?/g, '#')] = 1;
+      });
+      return {
+        texts: Object.keys(texts).sort(),
+        colors: Object.keys(colors).sort(),
+        kinds: Object.keys(kinds).sort(),
+        colored: colored, buttons: buttons, shown: shown
+      };
     }
   };
 })()`;
@@ -304,7 +344,7 @@ async function probeTooltips(page, prefix, rootSel) {
     || r.tip.x + r.tip.w > vp.width + 1 || r.tip.y + r.tip.h > vp.height + 1));
   check(prefix + '3', out.length === 0,
     'тултип не выходит за вьюпорт',
-    'вылезает за экран: ' + out.map((r) => r.t.label).join(', '));
+    'вылезает за экран (RETRO 26, 31): ' + out.map((r) => r.t.label).join(', '));
 
   // Гаснет ли после ухода курсора.
   await page.mouse.move(2, 2);
@@ -392,6 +432,14 @@ async function main() {
     check('E5', ov.rootFound, 'корень .' + ns + '-root отрисован',
       'корня .' + ns + '-root в DOM нет — разметка не построена');
 
+    // Снимаем инвентарь ДО кликов: клик меняет состояние и картину.
+    const invChart = await page.evaluate(
+      (s) => window.__smoke.inventory(s), '.' + ns + '-overlay');
+    if (opts.shots) {
+      fs.mkdirSync(opts.shots, { recursive: true });
+      await page.screenshot({ path: path.join(opts.shots, 'chart.png'), fullPage: false });
+    }
+
     // ── тултипы ──────────────────────────────────────────────────────────────
     const tipNodes = await page.evaluate(() => window.__smoke.tipNodes());
     const t = tipNodes > 0
@@ -425,7 +473,29 @@ async function main() {
       skip('E6', 'тултипов нет');
     }
 
-    // ── B7: клик пересобирает разметку ───────────────────────────────────────
+    // ── E12: hover не пересобирает разметку ──────────────────────────────────
+    // Полный render() на наведении пересоздаёт DOM под курсором — тултип
+    // моргает (RETRO 20). Проверяем до кликов: клик состояние меняет законно.
+    if (t.triggers.length) {
+      await page.mouse.move(2, 2);
+      await wait(160);
+      const beforeHover = await page.evaluate((n) => window.__smoke.overlayHTML(n), ns);
+      const tg = t.triggers[t.triggers.length - 1];
+      await page.mouse.move(tg.cx, tg.cy);
+      await page.mouse.move(tg.cx + 1, tg.cy);
+      await wait(260);
+      const afterHover = await page.evaluate((n) => window.__smoke.overlayHTML(n), ns);
+      check('E12', beforeHover === afterHover,
+        'hover не пересобирает разметку',
+        'наведение изменило разметку overlay. Если это подсветка через classList — '
+          + 'норма; если полный render() — тултип будет мигать (RETRO 20)', true);
+      await page.mouse.move(2, 2);
+      await wait(160);
+    } else {
+      skip('E12', 'триггеров нет');
+    }
+
+    // ── E7: клик пересобирает разметку ───────────────────────────────────────
     // Ловит «фиктивный render()», который не вызывает buildHTML(): интерактив
     // формально есть, но на экране после клика ничего не меняется (RETRO 45).
     const clickable = t.triggers.filter((x) => x.tag === 'button' || /:/.test(x.label));
@@ -497,6 +567,11 @@ async function main() {
         const page3 = await newPage(browser, errsVs);
         await page3.goto(pathToFileURL(vsPath).href);
         await wait(400);
+        await page3.evaluate(PROBE);
+        const invMock = await page3.evaluate(() => window.__smoke.inventory(null));
+        if (opts.shots) {
+          await page3.screenshot({ path: path.join(opts.shots, 'mockup.png'), fullPage: false });
+        }
         const m = await probeTooltips(page3, 'EM', null);
         await page3.close();
 
@@ -509,6 +584,45 @@ async function main() {
           'тултип работает там же, где в макете',
           'в макете тултип показывается (' + m.visible + '), в чарте — ни разу: '
             + 'перенос интерактива сломан');
+
+        // ── инвентарь: что есть в макете и чего нет в чарте ──────────────────
+        // Проверяет не «похоже ли», а «не потеряно ли»: молча выпавший элемент
+        // макета не ломает ни синтаксис, ни валидатор, и всплывает у пользователя
+        // (RETRO 41). Сравниваем структуру, а не значения.
+        if (invChart && invMock) {
+          const lostKinds = invMock.kinds.filter((k) => invChart.kinds.indexOf(k) === -1);
+          check('EV3', lostKinds.length === 0,
+            'все виды триггеров макета есть в чарте',
+            'в чарте нет триггеров макета: ' + lostKinds.join(', '));
+
+          check('EV4', invChart.colored >= invMock.colored,
+            'цветных элементов не меньше, чем в макете ('
+              + invChart.colored + ' vs ' + invMock.colored + ')',
+            'в макете ' + invMock.colored + ' цветных элементов, в чарте '
+              + invChart.colored + ' — часть баров/плашек не перенесена', true);
+
+          const lostColors = invMock.colors.filter((c) => invChart.colors.indexOf(c) === -1);
+          check('EV5', lostColors.length === 0,
+            'палитра макета перенесена полностью',
+            'цвета макета, которых нет в чарте: ' + lostColors.slice(0, 6).join(' '), true);
+
+          // Тексты: цифры замаскированы, поэтому расходятся либо подписи
+          // интерфейса (это потеря), либо строки из данных (это норма).
+          const lostTexts = invMock.texts.filter((x) => invChart.texts.indexOf(x) === -1);
+          const extraTexts = invChart.texts.filter((x) => invMock.texts.indexOf(x) === -1);
+          check('EV6', lostTexts.length === 0,
+            'все подписи макета встречаются в чарте',
+            'нет в чарте (' + lostTexts.length + '): '
+              + lostTexts.slice(0, 5).map((s) => '«' + s.slice(0, 40) + '»').join(', ')
+              + '. Строки из данных здесь — норма, подписи интерфейса — потеря', true);
+          if (extraTexts.length) {
+            warn('EV7', 'есть в чарте, но нет в макете (' + extraTexts.length + '): '
+              + extraTexts.slice(0, 5).map((s) => '«' + s.slice(0, 40) + '»').join(', ')
+              + '. Проверь, не выдуманный ли это текст (RETRO 12)');
+          } else {
+            pass('EV7', 'в чарте нет текстов, которых не было бы в макете');
+          }
+        }
       }
     }
   } finally {

@@ -257,7 +257,7 @@ def check_report(path):
         'отчёт SELF_CHECK.md содержит все ' + str(len(need)) + ' пунктов',
         bad='в SELF_CHECK.md нет ' + str(len(missing)) + ' из ' + str(len(need))
             + ' обязательных пунктов (' + ', '.join(missing[:6])
-            + '...) — отчёт написан в своём формате, чек-лист не пройден')
+            + '...) — отчёт написан в своём формате, чек-лист не пройден (RETRO 43)')
 
 
 def main():
@@ -324,7 +324,7 @@ def main():
         tail = code[opt_end + 1:] if opt_end and opt_end != -1 else ''
         tail_ok = not re.search(r'[A-Za-z0-9_$]', tail.replace(';', ''))
         add('S1', at_col0 and tail_ok,
-            'option глобально, строка ' + str(last) + '/' + str(len(lines)),
+            'option глобально (RETRO 14), строка ' + str(last) + '/' + str(len(lines)),
             bad=('строка ' + str(last) + ': option внутри блока/функции (отступ)'
                  if not at_col0 else
                  'после литерала option есть код (строка '
@@ -394,7 +394,7 @@ def main():
         ok = ('option' not in bare_catch
               and ('innerHTML' in bare_catch or 'textContent' in bare_catch))
         add('C6b', ok, 'catch выводит ошибку в overlay',
-            bad='catch молчит или обращается к option до БЛОКА 7 (RETRO 24)')
+            bad='catch молчит или обращается к option до БЛОКА 7 (RETRO 16, 24)')
 
     # ══ S9/S14-S17. Вызов render, префикс, слушатели, координаты тултипа ══
     render_body = find_function(code, bare, 'render')
@@ -437,7 +437,7 @@ def main():
     if tip_body is not None:
         add('S16', not ('hostRect' in tip_body or 'clientWidth' in tip_body),
             'fixed-тултип считает координаты от окна', warn=True,
-            bad='fixed-тултип использует локальные координаты/clientWidth (RETRO 26)')
+            bad='fixed-тултип использует локальные координаты/clientWidth (RETRO 26, 31)')
     elif has_tip and not is_tpl:
         add('S16', False, '', warn=True,
             bad='функции renderTip()/positionTooltip() нет — проверка координат '
@@ -515,7 +515,7 @@ def main():
             lit = '.' + mns.group(1) + '-'
             n_hard = css_body.count(lit)
             add('S5b', n_hard == 0, 'префикс в buildCSS только через P/CFG.ns', warn=True,
-                bad='литерал "' + lit + '" вписан в CSS ' + str(n_hard)
+                bad='(RETRO 47) литерал "' + lit + '" вписан в CSS ' + str(n_hard)
                     + ' раз вместо P — смена CFG.ns сломает эти правила')
 
     # ══ S6. Каждый класс разметки имеет CSS-правило ══
@@ -530,7 +530,7 @@ def main():
                    if c not in css_body and c.split('-')[-1] not in css_body]
         add('S6', not missing or is_tpl,
             'все классы со стилями', warn=is_tpl,
-            bad='классы без CSS: ' + ', '.join(missing[:6]))
+            bad='классы без CSS: ' + ', '.join(missing[:6]) + ' (RETRO 6)')
 
     # ══ S7/T1-T5. Тултип ══
     if has_tip:
@@ -600,6 +600,26 @@ def main():
                     and re.search(cls_pat, flat_css):
                 continue
             unset.append(name)
+        # ══ T6. hover не пересобирает разметку ══
+        # Полный render() на наведении пересоздаёт DOM прямо под курсором:
+        # тултип моргает, выделение слетает, на больших таблицах ещё и тормозит.
+        # Для hover есть лёгкий renderTip() (RETRO 20).
+        hover_body = find_function(code, bare, 'onOver')
+        if hover_body is None:
+            mh = re.search(r"addEventListener\s*\(\s*['\"]mouse(?:over|move|enter)['\"]"
+                           r"\s*,\s*function\s*\w*\s*\([^)]*\)\s*", bare)
+            if mh:
+                brh = bare.find('{', mh.end())
+                if brh != -1:
+                    endh = match_braces(bare, brh)
+                    if endh != -1:
+                        hover_body = code[brh + 1:endh]
+        if hover_body is not None:
+            add('T6', not re.search(r'\brender\s*\(', hover_body),
+                'hover не вызывает полный render()',
+                bad='обработчик наведения вызывает render(): разметка пересобирается '
+                    'под курсором, тултип будет мигать (RETRO 20)')
+
         add('T5', not unset, 'скрытие тултипа снимается при показе',
             bad='CSS прячет тултип через ' + ', '.join(unset)
                 + ' — и ни одна строка JS это не снимает. Тултип отрисуется '
@@ -619,9 +639,9 @@ def main():
     # ══ S11/S12/D1. Запреты синтаксиса ══
     # Проверяем по code: комментарии затёрты, ложных срабатываний нет.
     for cid, pat, msg in [
-        ('S11a', r'`', 'backticks / template-literals'),
-        ('S11b', r'=>', 'стрелочные функции'),
-        ('S11c', r'\b(?:let|const)\s+\w', 'let / const'),
+        ('S11a', r'`', 'backticks / template-literals (RETRO 13)'),
+        ('S11b', r'=>', 'стрелочные функции (RETRO 13)'),
+        ('S11c', r'\b(?:let|const)\s+\w', 'let / const (RETRO 13)'),
         ('S12', r'document\.getElementById', 'document.getElementById (RETRO 15)'),
         ('D1a', r'\b(?:import|require)\s*[\(\'"]', 'import / require'),
         ('D1b', r'\bfetch\s*\(', 'fetch'),
@@ -652,7 +672,7 @@ def main():
     add('H2', not gaming, 'нет кода, написанного ради валидатора',
         bad='строки ' + ','.join(map(str, gaming[:5]))
             + ': код подогнан под validate.py. Проверка описывает поведение — '
-              'заглушка гасит сигнал, а баг остаётся (RETRO 45)')
+              'заглушка гасит сигнал, а баг остаётся (RETRO 42, 45)')
 
     # ══ M7. Всё data, не data[0] ══
     add('M7', not re.search(r'\bdata\s*\[\s*0\s*\]', bare), 'читается весь data',
