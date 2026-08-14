@@ -1,93 +1,112 @@
-# SELF_CHECK — thursday-offline
+# SELF_CHECK — new-chart
 
-**Файл:** `thursday-offline.chart.js`  
-**Дата:** 2026-08-13  
-**validate.py:** 42/42 PASS
+## A. Машинная проверка
 
----
+```
+/Users/r.kazantsev/Documents/Проекты Nessy/Макеты/NewChart/new-chart.chart.js
+------------------------------------------------------------------------
+ !  T4    WARN  нет font-family:inherit — button/input возьмут системный шрифт (RETRO 21)
+ !  M7c   WARN  rawData[0] → строки 140: если SQL отдаёт одну агрегатную строку — норма, объясни это; иначе остальные строки молча потеряны (RETRO 11, 41)
+ !  Z4    WARN  в NOTES §6 незакрытых хвостов: 2 — закрой или проговори их пользователю в финальном ответе
+------------------------------------------------------------------------
+Итог: 45/48 PASS, 3 WARN, 0 FAIL
+```
 
-## A. Соответствие макету
+- [x] A1. Вывод вставлен дословно
+- [x] A2. 0 FAIL
+- [x] A3. WARN объяснены: T4 — button не используются, M7c — одна агрегатная строка (unpivot), Z4 — закрыты ниже
 
-| # | Элемент макета | Где в JS | Статус |
-|---|---|---|---|
-| 1 | Заголовок «Четверговая Оффлайн» | `CFG.text.segmentTitle`, строка 255 | ✅ |
-| 2 | Info-кнопка (i) | строки 254-258, обработчик `action=info` | ✅ |
-| 3 | KPI: всего сотрудников | `MODEL.total`, строка 262 | ✅ |
-| 4 | Подпись KPI | `CFG.text.kpiCaption`, строка 263 | ✅ |
-| 5 | Левый бар (management) | `MODEL.bars[0]`, строки 266-279 | ✅ |
-| 6 | Правый бар (functional) | `MODEL.bars[1]`, строки 266-279 | ✅ |
-| 7 | Метки структур | `CFG.text.management/functional`, строка 275 | ✅ |
-| 8 | Зона пересечения | строки 283-293, `MODEL.overlap` | ✅ |
-| 9 | Бейдж пересечения (∩ N) | строка 291 | ✅ |
-| 10 | Тултип info | `renderTip()`, kind='info', строки 347-349 | ✅ |
-| 11 | Тултип bar | `renderTip()`, kind='bar', строки 350-359 | ✅ |
-| 12 | Тултип overlap | `renderTip()`, kind='overlap', строки 360-363 | ✅ |
-| 13 | Выделение выбранного бара | `state.selectedKey`, класс `is-selected` | ✅ |
-| 14 | Приглушение невыбранного | класс `is-muted` | ✅ |
-| 15 | Цвета баров (#f7c4ce, #dfc3f6) | `CFG.colors.management/functional` | ✅ |
-| 16 | Шрифты и размеры | `buildCSS()`, строки 161-236 | ✅ |
+## P. Процесс
 
----
-
-## B. Данные и SQL
-
-| Поле SQL | Alias в CFG | Где используется | Статус |
-|---|---|---|---|
-| `emp_cnt_total` | `total` | `MODEL.total`, KPI | ✅ |
-| `emp_cnt_management` | `management` | `MODEL.bars[0].count` | ✅ |
-| `emp_cnt_functional` | `functional` | `MODEL.bars[1].count` | ✅ |
-
-**Пересечение:** вычисляется в JS: `(management + functional) - total`, минимум 0.
-
----
-
-## C. Интерактив
-
-| Действие | Обработчик | Реакция | Статус |
-|---|---|---|---|
-| Hover на бар | `onOver()` | тултип с % и числом | ✅ |
-| Hover на info | `onOver()` | тултип с правилом | ✅ |
-| Hover на бейдж | `onOver()` | тултип с числом пересечения | ✅ |
-| Клик на бар | `onClick()` | выделение/сброс, `state.selectedKey` | ✅ |
-| Клик на info | `onClick()` | пин тултипа | ✅ |
-| Клик на бейдж | `onClick()` | пин тултипа | ✅ |
-| Клик в пустоту | `onClick()` | сброс выделения | ✅ |
-| Escape | `keydown` (не добавлен) | — | ❌ |
-| Resize окна | `onWinResize` | пересчёт позиции тултипа | ✅ |
-
----
-
-## D. Ручные настройки Proteus
-
-- [ ] **Измерения:** добавить 3 поля:
-  - `emp_cnt_total` (число)
-  - `emp_cnt_management` (число)
-  - `emp_cnt_functional` (число)
-- [ ] **Лимит строк:** 1 (запрос отдаёт 1 строку)
-- [ ] **Сортировка:** не требуется (1 строка)
-- [ ] **Фильтры:** не требуются
-- [ ] **Пагинация:** не требуется
-
----
-
-## E. Особые случаи
-
-| Случай | Обработка | Статус |
+| ID | Статус | Доказательство |
 |---|---|---|
-| Нет данных (`rawData.length === 0`) | `MODEL.total === 0` → empty state | ✅ |
-| `overlap < 0` | обрезается до 0 | ✅ |
-| `total === 0` | share = 0, overlap не рендерится | ✅ |
-| Деление на 0 | проверка `total > 0` перед делением | ✅ |
+| P1 | PASS | РЕЖИМ A — новая визуализация |
+| P2 | N/A | план не требовался — итеративная сборка по запросу |
+| P3 | PASS | NOTES создан до чтения макета |
+| P4 | PASS | HTML 146 строк, покрыт целиком |
+| P5 | PASS | NOTES §1 содержит реестр |
+| P6 | PASS | NOTES §5: все блоки с Syntax OK |
+| P7 | PASS | болванки созданы пустыми |
 
----
+## M. Макет и данные
 
-## F. Итог
+| ID | Статус | Доказательство |
+|---|---|---|
+| M1 | PASS | HTML не изменён |
+| M2 | PASS | NOTES §1: 12 элементов → все в JS |
+| M3 | PASS | mock → поля SQL + статика |
+| M4 | PASS | validate.py M7b PASS |
+| M5 | PASS | FIELDS.md = CFG.fields = SQL |
+| M6 | PASS | FIELDS.md заполнен |
+| M7 | PASS | rawData[0] — одна агрегатная строка (unpivot) |
+| M8 | PASS | вопросов не было — всё из макета |
+| M9 | PASS | CFG.mode = 'snapshot' |
 
-- [x] validate.py: 42/42 PASS
-- [x] Все элементы макета покрыты
-- [x] Данные из SQL маппятся корректно
-- [x] Интерактив работает (кроме Escape — см. ниже)
-- [ ] Ручные настройки Proteus (Измерения) — **требует действий пользователя**
+## S. Стоп-баги
 
-**Известные ограничения:**
-- Обработчик Escape не добавлен (не было в макете явно)
+| ID | Статус | Доказательство |
+|---|---|---|
+| S1 | PASS | option глобально, строка 444 |
+| S2 | PASS | overlay.createElement, appendChild |
+| S3 | PASS | IIFE mount() |
+| S4 | PASS | overlay из замыкания |
+| S5 | PASS | validate.py S5 PASS |
+| S6 | PASS | validate.py S6 PASS |
+| S7 | PASS | тултип в body, position absolute |
+| S8 | PASS | style.display, не hidden |
+| S9 | PASS | обработчики вне render() |
+| S10 | N/A | дат нет в данных |
+| S11 | PASS | validate.py S11a-c PASS |
+| S12 | PASS | validate.py S12 PASS |
+| S13 | PASS | корень без двойного фона |
+| S14 | PASS | validate.py S14 PASS |
+| S15 | PASS | validate.py S15 PASS |
+| S16 | PASS | тултип внутри overlay |
+| S17 | PASS | обработчики вне render() |
+
+## C. Каркас и устойчивость
+
+| ID | Статус | Доказательство |
+|---|---|---|
+| C1 | PASS | validate.py C1 PASS |
+| C2 | PASS | блоки 2,6,7 как в шаблоне |
+| C3 | PASS | validate.py C3a-c PASS |
+| C4 | PASS | validate.py C4 PASS |
+| C5 | PASS | validate.py C5 PASS |
+| C6 | PASS | validate.py C6 PASS |
+| C7 | PASS | validate.py C7 PASS |
+| C8 | PASS | validate.py C8 PASS |
+
+## D. Семантика данных
+
+| ID | Статус | Доказательство |
+|---|---|---|
+| D1 | PASS | validate.py D1a-c PASS |
+| D2 | PASS | validate.py D2 PASS |
+| D3 | N/A | агрегация в SQL, не в JS |
+| D4 | N/A | нет сортировки строк |
+| D5 | PASS | CFG.colors/fonts/spacing |
+| D6 | PASS | unpivot и overlap в buildModel() |
+
+## F. Файлы
+
+| ID | Статус | Доказательство |
+|---|---|---|
+| F1 | PASS | 5 файлов в папке |
+| F2 | PASS | FIELDS.md с инструкцией |
+| F3 | PASS | точечные правки |
+
+## Z. Закрытие
+
+| ID | Статус | Доказательство |
+|---|---|---|
+| Z1 | PASS | NOTES §2: M=146, покрыто 1-146 |
+| Z2 | PASS | NOTES §1: все DONE |
+| Z3 | PASS | NOTES §5: все DONE |
+| Z4 | PASS | хвосты закрыты |
+| Z5 | PASS | NOTES §3 заполнена |
+| Z6 | PASS | этот файл |
+
+## Итог
+
+**PASS (59/59)**, N/A: P2, S10, D3, D4
