@@ -131,10 +131,13 @@ function autoMock(fieldNames, rows) {
 // ── стенд ────────────────────────────────────────────────────────────────────
 // Повторяет окружение Proteus: хост с атрибутом [_echarts_instance_], canvas
 // внутри, глобальные data и option. Ничего больше чарту не полагается.
+// Ширина хоста — 100%: ячейка дашборда задаёт размер виджету, и при ресайзе
+// вьюпорта хост меняется вместе с ним — это позволяет мерить, тянется ли
+// корень за хостом (E13, RETRO 48).
 function hostHTML(dataJson, chartHref) {
   return '<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8">'
     + '<style>html,body{margin:0;padding:0;background:#fff}</style></head><body>'
-    + '<div _echarts_instance_="ec_smoke" style="width:820px;height:420px;position:relative">'
+    + '<div _echarts_instance_="ec_smoke" style="width:100%;height:420px;position:relative">'
     + '<canvas width="820" height="420"></canvas></div>'
     + '<script>var data = ' + dataJson + '; var option = null;<\/script>'
     + '<script src="' + chartHref + '"><\/script>'
@@ -549,6 +552,17 @@ async function main() {
       'узлов тултипа было ' + tipNodes + ', стало ' + tipNodes2 + ' — старый не удаляется');
 
     // ── B10: ресайз ──────────────────────────────────────────────────────────
+    const measure = () => page.evaluate((n) => {
+      var host = document.querySelector('[_echarts_instance_]');
+      var root = document.querySelector('.' + n + '-root');
+      if (!host || !root) return null;
+      return {
+        host: Math.round(host.getBoundingClientRect().width),
+        root: Math.round(root.getBoundingClientRect().width)
+      };
+    }, ns);
+    const wide = await measure();
+
     const errsResize = errs.length;
     await page.setViewportSize({ width: 520, height: 420 });
     await wait(350);
@@ -556,6 +570,25 @@ async function main() {
     check('E10', errs.length === errsResize && ov3.html > 50,
       'ресайз переживается без ошибок',
       'после ресайза ошибок: ' + (errs.length - errsResize) + ', разметка: ' + ov3.html);
+
+    // ── E13: корень тянется за хостом ────────────────────────────────────────
+    // Ячейка дашборда произвольная и меняется при ресайзе. Если из макета
+    // перенесена фикс-ширина рамки, корень остаётся в одном размере при любом
+    // хосте: при широкой ячейке график не растягивается, при узкой — обрезан.
+    // Меряем корень при двух ширинах хоста; допуск 30px на скроллбар.
+    const narrow = await measure();
+    if (wide && narrow) {
+      const fits = (m) => Math.abs(m.root - m.host) <= 30;
+      check('E13', fits(wide) && fits(narrow),
+        'корень тянется за хостом (' + wide.host + '→' + wide.root
+          + 'px, ' + narrow.host + '→' + narrow.root + 'px)',
+        'корень не следует за хостом (RETRO 48): хост ' + wide.host + '→'
+          + narrow.host + 'px, корень ' + wide.root + '→' + narrow.root
+          + 'px — ширина виджета заморожена рамкой макета, в дашборде он '
+          + 'не растянется по ячейке либо будет обрезан');
+    } else {
+      skip('E13', 'корень или хост не найдены — растяжение не мерилось');
+    }
 
     await page.close();
 

@@ -518,6 +518,40 @@ def main():
                 bad='(RETRO 47) литерал "' + lit + '" вписан в CSS ' + str(n_hard)
                     + ' раз вместо P — смена CFG.ns сломает эти правила')
 
+        # ── S19. Корень резиновый ──
+        # Макет — отдельная страница со своей рамкой: фикс-ширина, центрирование.
+        # Перенесённая на корень, рамка замораживает виджет: ячейка дашборда
+        # растёт, а график — нет. Фикс-размеры допустимы только у внутренних
+        # элементов; min-width на корне не мешает тянуться и не считается.
+        mroot = re.search(r'-root\{', css_body)
+        if mroot is not None:
+            seg = css_body[mroot.end():mroot.end() + 800]
+            cut = seg.find('}')
+            rule = re.sub(r"['\"+\s]", '', seg if cut == -1 else seg[:cut])
+            fixed = [m.group(0) for m in
+                     re.finditer(r'(?<![a-z-])(?:max-)?width:\d+(?:\.\d+)?px', rule)]
+            add('S19', not fixed, 'корень резиновый, без фиксированной ширины',
+                bad='(RETRO 48) у .<ns>-root фиксированная ширина: '
+                    + ', '.join(fixed[:3]) + ' — виджет не растянется за ячейкой '
+                    'дашборда. Рамка макета не переносится: корень width:100%')
+            if not fixed and 'width:100%' not in rule:
+                add('S19b', False, '', warn=True,
+                    bad='(RETRO 48) в правиле .<ns>-root нет width:100% — сверь '
+                        'с шаблоном: корень обязан тянуться за хостом')
+
+        # ── S20. Оконные @media ──
+        # @media (max-width) меряет ОКНО, а виджет живёт в ячейке дашборда:
+        # окно 1920px, ячейка 400px — «узкая» ветка не включится никогда.
+        # Для тултипа в body оконная ширина законна — тогда объясни WARN строкой.
+        medias = [line_of(css_body, m.start()) for m in
+                  re.finditer(r'@media[^{\'"]*\(\s*(?:max|min)-width', css_body)]
+        if medias:
+            add('S20', False, '', warn=True,
+                bad='(RETRO 49) @media по ширине ОКНА в buildCSS (строк: '
+                    + str(len(medias)) + ') — в ячейке дашборда не сработает. '
+                    'Брейкпоинт делается классом на корне по ширине хоста '
+                    '(RECIPES.md, «Рамка макета ≠ рамка виджета»)')
+
     # ══ S6. Каждый класс разметки имеет CSS-правило ══
     if html_body is not None and css_body is not None:
         used = set(re.findall(r'class=\\?["\']([a-z0-9_ -]+)', html_body))
