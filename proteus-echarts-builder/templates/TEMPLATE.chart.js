@@ -173,17 +173,47 @@ function buildHTML() {
     }
     getTip();
 
-    // Показ/скрытие тултипа НЕ требует полного render():
-    // тултип лежит в body с position:fixed: координаты getBoundingClientRect()
-    // используются КАК ЕСТЬ. Не вычитать rect корня/overlay; клампинг только
-    // по window.innerWidth / window.innerHeight, не по clientWidth контейнера.
-    // Не хватает места справа — рисуй слева от цели, снизу — сверху.
-    function renderTip() {
+    // showTip/hideTip — СЛУЖЕБНЫЕ. Не переписывать, не переименовывать, не
+    // копировать их логику в свой код. Здесь заперты два правила, на которых
+    // ломались все предыдущие версии:
+    //   1) тултип спрятан ДВУМЯ свойствами (display + opacity) — показ обязан
+    //      снять ОБА. Снял одно — узел построится и останется невидимым,
+    //      без ошибок и без единого следа в отладке (RETRO 44);
+    //   2) тултип лежит в body с position:fixed, поэтому координаты
+    //      getBoundingClientRect() берутся КАК ЕСТЬ, а клампинг идёт по
+    //      window.innerWidth/innerHeight — не по размерам контейнера (RETRO 26).
+    // Твоё дело — только содержимое и якорь. Видимость и позицию считает showTip.
+    function showTip(html, rect) {
       var tip = getTip();
-      if (!state.tip) { tip.style.opacity = '0'; tip.style.display = 'none'; return; }
-      // [ЗАПОЛНИ] innerHTML и left/top в координатах окна
+      tip.innerHTML = html;
       tip.style.display = 'block';
+      tip.style.left = '0px';
+      tip.style.top = '0px';
+      var t = tip.getBoundingClientRect();
+      var pad = 6, gap = 8;
+      var left = rect.left + rect.width / 2 - t.width / 2;
+      var top = rect.top + rect.height + gap;
+      if (top + t.height > window.innerHeight - pad) top = rect.top - t.height - gap;
+      left = Math.max(pad, Math.min(left, window.innerWidth - t.width - pad));
+      top = Math.max(pad, Math.min(top, window.innerHeight - t.height - pad));
+      tip.style.left = Math.round(left) + 'px';
+      tip.style.top = Math.round(top) + 'px';
       tip.style.opacity = '1';
+    }
+    function hideTip() {
+      var tip = getTip();
+      tip.style.opacity = '0';
+      tip.style.display = 'none';
+    }
+
+    // Показ/скрытие тултипа НЕ требует полного render(): hover меняет только
+    // содержимое и позицию, полный render() — только на клик (RETRO 20).
+    // Якорь (rect) клади в state.tip при наведении: getBoundingClientRect()
+    // цели КАК ЕСТЬ, без вычитания rect корня.
+    function renderTip() {
+      if (!state.tip) { hideTip(); return; }
+      var html = '';   // [ЗАПОЛНИ] содержимое по state.tip.kind / state.tip.key
+      showTip(html, state.tip.rect);
     }
 
     // render ТОЛЬКО пересобирает разметку. Делегированные обработчики

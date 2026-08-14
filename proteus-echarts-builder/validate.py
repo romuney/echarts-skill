@@ -421,13 +421,27 @@ def main():
         add('S17', not re.search(r'(?:document|window)\.addEventListener', render_body),
             'глобальных слушателей внутри render() нет',
             bad='document/window.addEventListener внутри render() течёт и дублируется')
+        # S14 ловит только ФАКТ вызова. Пустой render(){} его проходит, поэтому
+        # отдельно требуем, чтобы render действительно пересобирал разметку.
+        add('S14b', 'buildHTML(' in render_body.replace(' ', ''),
+            'render() пересобирает разметку через buildHTML()',
+            bad='render() не вызывает buildHTML() — это заглушка ради проверки, '
+                'после клика на экране ничего не изменится (RETRO 45)')
 
+    has_tip = 'tip' in bare.lower() or 'tooltip' in bare.lower()
+
+    # Имена тултип-функций — часть контракта шаблона: по ним ищет S16.
+    # Переименовал — проверка не находит тело и МОЛЧА пропадает из отчёта.
     tip_body = (find_function(code, bare, 'positionTooltip')
                 or find_function(code, bare, 'renderTip'))
     if tip_body is not None:
         add('S16', not ('hostRect' in tip_body or 'clientWidth' in tip_body),
             'fixed-тултип считает координаты от окна', warn=True,
             bad='fixed-тултип использует локальные координаты/clientWidth (RETRO 26)')
+    elif has_tip and not is_tpl:
+        add('S16', False, '', warn=True,
+            bad='функции renderTip()/positionTooltip() нет — проверка координат '
+                'ПРОПУЩЕНА. Верни имя из шаблона (SKILL.md, правило 7)')
 
     # ══ C4. ResizeObserver не вызывает render ══
     ro_body = ''
@@ -445,6 +459,25 @@ def main():
     # ══ C7. Состояние ══
     add('C7', '__pvtState' in bare, 'состояние в window.__pvtState',
         bad='нет __pvtState — состояние слетит на перерисовке (RETRO 2)')
+
+    # ══ S18. Разметка читает state — кто-то должен его писать ══
+    # Классика: buildHTML() смотрит в state.selectedKey, а обработчики пишут
+    # в локальную переменную внутри mount(). Синтаксис чист, валидатор чист,
+    # интерактив мёртв: подсветка и активные состояния не включаются (RETRO 46).
+    state_reads = set()
+    for _body in (find_function(code, bare, 'buildHTML'),
+                  find_function(code, bare, 'buildCSS')):
+        if _body:
+            state_reads |= set(re.findall(r'\bstate\.(\w+)\b', _body))
+    if state_reads:
+        unwritten = sorted(k for k in state_reads
+                           if not re.search(r'\bstate\.' + k + r'\s*(?:=[^=]|\+\+|--)', code))
+        # state[key] = ... доказать статически нельзя — понижаем до WARN
+        dyn = bool(re.search(r'\bstate\s*\[', code))
+        add('S18', not unwritten, 'состояние, которое читает разметка, обновляется',
+            warn=dyn,
+            bad='buildHTML/buildCSS читают state.' + ', state.'.join(unwritten[:4])
+                + ', но никто их не присваивает — интерактив не включится (RETRO 46)')
 
     # ══ S5. Префикс селекторов в buildCSS ══
     css_body = find_function(code, bare, 'buildCSS')
@@ -473,6 +506,18 @@ def main():
             bad=('голые селекторы: ' + ', '.join(bad_sel[:5]) if bad_sel
                  else 'нет префикса через CFG.ns — стили утекут в дашборд (RETRO 5)'))
 
+        # ── S5b. Префикс вписан руками вместо P ──
+        # '.chart-row' в строке CSS работает ровно до тех пор, пока CFG.ns
+        # равен 'chart'. Такие правила молча отваливаются при смене ns и
+        # обычно появляются при копипасте макета кусками.
+        mns = re.search(r"\bns\s*:\s*['\"]([\w-]+)['\"]", code)
+        if mns:
+            lit = '.' + mns.group(1) + '-'
+            n_hard = css_body.count(lit)
+            add('S5b', n_hard == 0, 'префикс в buildCSS только через P/CFG.ns', warn=True,
+                bad='литерал "' + lit + '" вписан в CSS ' + str(n_hard)
+                    + ' раз вместо P — смена CFG.ns сломает эти правила')
+
     # ══ S6. Каждый класс разметки имеет CSS-правило ══
     if html_body is not None and css_body is not None:
         used = set(re.findall(r'class=\\?["\']([a-z0-9_ -]+)', html_body))
@@ -487,8 +532,7 @@ def main():
             'все классы со стилями', warn=is_tpl,
             bad='классы без CSS: ' + ', '.join(missing[:6]))
 
-    # ══ S7/T1-T4. Тултип ══
-    has_tip = 'tip' in bare.lower() or 'tooltip' in bare.lower()
+    # ══ S7/T1-T5. Тултип ══
     if has_tip:
         add('S7', 'document.body.appendChild' in bare.replace(' ', ''),
             'тултип монтируется в body', warn=True,
@@ -519,6 +563,47 @@ def main():
         add('T4', 'font-family:inherit' in css_body.replace(' ', ''),
             'font-family:inherit для дочерних', warn=True,
             bad='нет font-family:inherit — button/input возьмут системный шрифт (RETRO 21)')
+
+    # ══ T5. Симметрия: чем спрятали, тем и показываем ══
+    # Правило тултипа в CSS прячет узел (opacity:0 / visibility:hidden /
+    # display:none), а снять это обязан JS в момент показа. Нет снятия — тултип
+    # честно строится, позиционируется и наполняется текстом, но остаётся
+    # невидимым: ни ошибки, ни пустого экрана, ни зацепки в отладке (RETRO 44).
+    if has_tip and css_body is not None:
+        mtip = re.search(r'-tip\{', css_body)
+        rule = ''
+        if mtip:
+            seg = css_body[mtip.end():mtip.end() + 800]
+            cut = seg.find('}')
+            rule = (seg if cut == -1 else seg[:cut]).replace(' ', '')
+        # ('свойство в CSS', 'что считаем снятием в JS')
+        props = [
+            ('opacity', r'opacity:0(?![.\d])',
+             r"\.style\.opacity\s*=\s*['\"]\s*(?!0\s*['\"])[^'\"]+['\"]",
+             r'opacity:1'),
+            ('visibility', r'visibility:hidden',
+             r"\.style\.visibility\s*=\s*['\"]\s*visible",
+             r'visibility:visible'),
+            ('display', r'display:none',
+             r"\.style\.display\s*=\s*['\"]\s*(?!none)[^'\"]+['\"]",
+             r'display:(?:block|flex|inline-block|grid)'),
+        ]
+        unset = []
+        flat_css = css_body.replace(' ', '')
+        for name, hide_pat, show_pat, cls_pat in props:
+            if not re.search(hide_pat, rule):
+                continue
+            if re.search(show_pat, code):
+                continue
+            # класс-переключатель — тоже законный способ показа
+            if re.search(r'classList\.(?:add|toggle|remove)\s*\(', code) \
+                    and re.search(cls_pat, flat_css):
+                continue
+            unset.append(name)
+        add('T5', not unset, 'скрытие тултипа снимается при показе',
+            bad='CSS прячет тултип через ' + ', '.join(unset)
+                + ' — и ни одна строка JS это не снимает. Тултип отрисуется '
+                  'невидимым: события, координаты и текст будут верные (RETRO 44)')
 
     # ══ S8. Скрытие не через hidden ══
     hid = [i for i, l in enumerate(code_lines, 1) if re.search(r'\.hidden\s*=', l)]
@@ -555,6 +640,19 @@ def main():
     cl = [i for i, l in enumerate(code_lines, 1) if 'console.log' in l]
     add('H1', not cl, 'нет console.log', warn=True,
         bad='console.log → строки ' + ','.join(map(str, cl[:5])))
+
+    # ══ H2. Код, написанный ради валидатора ══
+    # Проверки описывают ПОВЕДЕНИЕ. Заглушка, поставленная «чтобы позеленело»,
+    # снимает симптом и оставляет болезнь — а потом выглядит как доказательство,
+    # что всё в порядке (RETRO 45). Ищем по комментариям: агент их подписывает.
+    gaming = [i for i, l in enumerate(lines, 1)
+              if re.search(r'(?://|/\*|^\s*\*)\s*.*?(?:для\s+validate|ради\s+(?:валидатор|проверк)'
+                           r'|чтобы\s+(?:валидатор|проверка|позелен)|фиктивн|обойти\s+проверк'
+                           r'|заглушка\s+для)', l, re.I)]
+    add('H2', not gaming, 'нет кода, написанного ради валидатора',
+        bad='строки ' + ','.join(map(str, gaming[:5]))
+            + ': код подогнан под validate.py. Проверка описывает поведение — '
+              'заглушка гасит сигнал, а баг остаётся (RETRO 45)')
 
     # ══ M7. Всё data, не data[0] ══
     add('M7', not re.search(r'\bdata\s*\[\s*0\s*\]', bare), 'читается весь data',

@@ -76,7 +76,7 @@ var rawData = (typeof data !== 'undefined' && Array.isArray(data)) ? data : [];
 // чтобы правки разных сессий не расходились.
 if (!window.__pvtState) window.__pvtState = {};
 var __S = window.__pvtState;
-if (!__S[CFG.ns]) __S[CFG.ns] = { tip: null, selectedKey: null, tooltip: null };
+if (!__S[CFG.ns]) __S[CFG.ns] = { tip: null, selectedKey: null };
 var state = __S[CFG.ns];
 
 function esc(s) {
@@ -194,13 +194,13 @@ function buildCSS() {
   return [
     '<style>',
     P + '-root{--ink:' + CFG.colors.ink + ';--muted:' + CFG.colors.muted + ';--soft-ink:' + CFG.colors.softInk + ';--track:' + CFG.colors.track + ';--overlap-line:' + CFG.colors.overlapLine + ';--tip-bg:' + CFG.colors.tooltipBg + ';width:100%;height:100%;min-height:300px;position:relative;overflow:hidden;box-sizing:border-box;padding:' + CFG.spacing.rootPadding + ';color:var(--ink);font-family:' + CFG.fonts.family + ';-webkit-font-smoothing:antialiased}',
-    P + '-root *,.chart-root *::before,.chart-root *::after{box-sizing:border-box}',
+    P + '-root *,' + P + '-root *::before,' + P + '-root *::after{box-sizing:border-box;font-family:inherit}',
     P + '-head{display:flex;align-items:flex-start;justify-content:space-between;gap:' + CFG.spacing.headGap + '}',
     P + '-title{margin:0;color:var(--muted);font-size:14px;line-height:1.25;font-weight:500}',
     P + '-total{margin:2px 0 0;color:var(--ink);font-size:28px;line-height:1.05;font-weight:700;letter-spacing:-.7px;display:inline-block;cursor:default}',
     P + '-total small{margin-left:6px;color:var(--muted);font-size:12px;font-weight:450;letter-spacing:0}',
     P + '-info-button{width:22px;height:22px;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;padding:0;cursor:pointer;appearance:none;color:#a2a2a7;background:rgba(143,143,147,.1);border:0;border-radius:50%;transition:color 150ms ease,background 150ms ease}',
-    P + '-info-button:hover,.chart-root .info-button.is-active{color:#5e5e64;background:rgba(143,143,147,.2)}',
+    P + '-info-button:hover,' + P + '-info-button.is-active{color:#5e5e64;background:rgba(143,143,147,.2)}',
     P + '-info-icon{font-family:Georgia,"Times New Roman",serif;font-size:13px;line-height:1;font-weight:700;pointer-events:none}',
     P + '-plot{position:relative;margin-top:' + CFG.spacing.plotMarginTop + '}',
     P + '-overlap-band{position:absolute;top:0;bottom:24px;background:' + CFG.colors.overlapBg + ';border-left:1px dashed var(--overlap-line);border-right:1px dashed var(--overlap-line);pointer-events:none}',
@@ -213,7 +213,7 @@ function buildCSS() {
     P + '-track{width:100%;height:26px;position:relative;display:block;background:var(--track);border-radius:7px;pointer-events:none}',
     P + '-bar{height:26px;position:absolute;top:0;border-radius:7px;transition:opacity 150ms ease}',
     P + '-bar-total{background:' + CFG.colors.barTotal + '}',
-    P + '-row.is-dimmed .bar,.chart-root .row.is-dimmed .row-label{opacity:.35}',
+    P + '-row.is-dimmed ' + P + '-bar,' + P + '-row.is-dimmed ' + P + '-row-label{opacity:.35}',
     P + '-axis{height:24px;position:relative;margin-top:6px;color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;pointer-events:none}',
     P + '-axis-tick{position:absolute;top:5px;transform:translateX(-50%);white-space:nowrap}',
     P + '-legend{display:flex;flex-wrap:wrap;align-items:center;gap:' + CFG.spacing.legendGap + ';margin-top:' + CFG.spacing.legendMarginTop + ';color:var(--muted);font-size:12px;line-height:1.3}',
@@ -221,7 +221,6 @@ function buildCSS() {
     P + '-legend-dot{width:9px;height:9px;border-radius:3px}',
     P + '-legend-dot.is-overlap{background:#fff;border:1px dashed var(--overlap-line)}',
     P + '-tip{position:fixed;z-index:99999;pointer-events:none;max-width:260px;padding:8px 10px;color:#fff;font-size:12px;line-height:1.4;background:' + CFG.colors.tooltipBg + ';border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.18);font-family:' + CFG.fonts.family + ';opacity:0;transition:opacity .15s}',
-    P + '-tip[style*="display: none"]{display:none}',
     P + '-tip-title{margin-bottom:2px;font-weight:600}',
     P + '-tip-note{margin-top:4px;color:rgba(255,255,255,.72)}',
     '@media (max-width:520px){' + P + '-total{font-size:24px}' + P + '-row-label,' + P + '-row-value{font-size:12px}}',
@@ -241,7 +240,7 @@ function buildHTML() {
   // HEADER: заголовок + кнопка info
   h.push('<div class="' + CFG.ns + '-head"><div><div class="' + CFG.ns + '-title">' + esc(L.title) + '</div>');
   h.push('<div class="' + CFG.ns + '-total" data-tip="total">' + L.total + '<small>' + employeeWord(L.total) + ' ' + CFG.text.totalSuffix + '</small></div></div>');
-  h.push('<button type="button" class="' + CFG.ns + '-info-button' + (state.tooltip && state.tooltip.kind === 'info' ? ' is-active' : '') + '" data-tip="info" aria-label="Правило формирования встречи"><span class="' + CFG.ns + '-info-icon" aria-hidden="true">i</span></button></div>');
+  h.push('<button type="button" class="' + CFG.ns + '-info-button' + (state.tip && state.tip.kind === 'info' ? ' is-active' : '') + '" data-tip="info" aria-label="Правило формирования встречи"><span class="' + CFG.ns + '-info-icon" aria-hidden="true">i</span></button></div>');
   // PLOT: зона пересечения + строки
   h.push('<div class="' + CFG.ns + '-plot">');
   if (L.overlap > 0) {
@@ -296,14 +295,49 @@ function pct(v, t) { return t ? (v / t * 100) : 0; }
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     host.appendChild(overlay);
 
-    // Рендер разметки
-    overlay.innerHTML = buildHTML();
+    // ── ТУЛТИП ──
+    // Узел создаётся РОВНО ОДИН РАЗ, до первого render(), и живёт в body.
+    // В buildHTML() его нет: innerHTML убил бы его на каждой перерисовке.
+    var tipEl = null;
+    function getTip() {
+      if (tipEl && tipEl.parentNode) return tipEl;
+      var old = document.querySelector('body > .' + CFG.ns + '-tip');
+      if (old) old.parentNode.removeChild(old);
+      tipEl = document.createElement('div');
+      tipEl.className = CFG.ns + '-tip';
+      document.body.appendChild(tipEl);
+      return tipEl;
+    }
+    getTip();
 
-    // Состояние
-    var selectedKey = null;
-    var tooltip = null;
+    // showTip/hideTip — служебные, из шаблона. Тултип спрятан ДВУМЯ свойствами
+    // (display:none + opacity:0), показ обязан снять оба: снятое наполовину
+    // скрытие даёт невидимый тултип при верных событиях и координатах (RETRO 44).
+    // Клампинг только по window.innerWidth/innerHeight (RETRO 26).
+    function showTip(html, rect) {
+      var tip = getTip();
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      tip.style.left = '0px';
+      tip.style.top = '0px';
+      var t = tip.getBoundingClientRect();
+      var pad = 6, gap = 8;
+      var left = rect.left + rect.width / 2 - t.width / 2;
+      var top = rect.top + rect.height + gap;
+      if (top + t.height > window.innerHeight - pad) top = rect.top - t.height - gap;
+      left = Math.max(pad, Math.min(left, window.innerWidth - t.width - pad));
+      top = Math.max(pad, Math.min(top, window.innerHeight - t.height - pad));
+      tip.style.left = Math.round(left) + 'px';
+      tip.style.top = Math.round(top) + 'px';
+      tip.style.opacity = '1';
+    }
+    function hideTip() {
+      var tip = getTip();
+      tip.style.opacity = '0';
+      tip.style.display = 'none';
+    }
 
-    // Поиск ближайшего элемента с data-tip (как в макете)
+    // Ближайший вверх по дереву узел с data-tip — цель тултипа.
     function getTrigger(node) {
       var c = node;
       while (c && c !== overlay) {
@@ -313,96 +347,118 @@ function pct(v, t) { return t ? (v / t * 100) : 0; }
       return null;
     }
 
-    // Контент тултипа (как в макете)
-    function tooltipContent(L) {
-      if (!tooltip) return '';
-      var k = tooltip.kind;
-      if (k === 'info') return '<div class="' + CFG.ns + '-tip-title">Правило формирования встречи</div><div>' + esc(L.rule) + '</div><div class="' + CFG.ns + '-tip-note">Срез на ' + esc(fmtDate(L.snapshot)) + '</div>';
-      if (k === 'total') return '<div class="' + CFG.ns + '-tip-title">Всего во встрече</div><div>' + L.total + ' ' + employeeWord(L.total) + '</div><div class="' + CFG.ns + '-tip-note">Объединение всех структур сегмента</div>';
-      if (k === 'overlap') return '<div class="' + CFG.ns + '-tip-title">Пересечение структур</div><div>' + L.overlap + ' ' + employeeWord(L.overlap) + ' · ' + fmtPct(pct(L.overlap, L.total)) + ' от всех</div><div class="' + CFG.ns + '-tip-note">Состоят одновременно во всех структурах</div>';
+    // Содержимое тултипа по виду цели.
+    function tipHTML(L) {
+      var k = state.tip.kind;
+      if (k === 'info') {
+        return '<div class="' + CFG.ns + '-tip-title">Правило формирования встречи</div><div>' + esc(L.rule)
+          + '</div><div class="' + CFG.ns + '-tip-note">Срез на ' + esc(fmtDate(L.snapshot)) + '</div>';
+      }
+      if (k === 'total') {
+        return '<div class="' + CFG.ns + '-tip-title">Всего во встрече</div><div>' + L.total + ' ' + employeeWord(L.total)
+          + '</div><div class="' + CFG.ns + '-tip-note">Объединение всех структур сегмента</div>';
+      }
+      if (k === 'overlap') {
+        return '<div class="' + CFG.ns + '-tip-title">Пересечение структур</div><div>' + L.overlap + ' ' + employeeWord(L.overlap)
+          + ' · ' + fmtPct(pct(L.overlap, L.total)) + ' от всех</div><div class="' + CFG.ns
+          + '-tip-note">Состоят одновременно во всех структурах</div>';
+      }
       var item = null;
       for (var i = 0; i < L.items.length; i++) {
-        if (L.items[i].key === tooltip.key) { item = L.items[i]; break; }
+        if (L.items[i].key === state.tip.key) { item = L.items[i]; break; }
       }
       if (!item) return '';
-      return '<div class="' + CFG.ns + '-tip-title">' + esc(item.name) + '</div><div>' + item.count + ' ' + employeeWord(item.count) + ' · ' + fmtPct(item.share) + ' от ' + L.total + '</div><div class="' + CFG.ns + '-tip-note">Только в этой структуре: ' + item.unique + ' · в пересечении: ' + L.overlap + '</div>';
+      return '<div class="' + CFG.ns + '-tip-title">' + esc(item.name) + '</div><div>' + item.count + ' '
+        + employeeWord(item.count) + ' · ' + fmtPct(item.share) + ' от ' + L.total + '</div><div class="'
+        + CFG.ns + '-tip-note">Только в этой структуре: ' + item.unique + ' · в пересечении: ' + L.overlap + '</div>';
     }
 
-    // Тултип в body с position:fixed (как в рабочем примере)
-    var oldTip = document.querySelector('body > .' + CFG.ns + '-tip');
-    if (oldTip) oldTip.parentNode.removeChild(oldTip);
-    var tip = document.createElement('div');
-    tip.className = CFG.ns + '-tip';
-    tip.style.cssText = 'display:none;position:fixed;z-index:99999;pointer-events:none;'
-      + 'max-width:260px;padding:8px 10px;color:#fff;font-size:12px;line-height:1.4;'
-      + 'background:' + CFG.colors.tooltipBg + ';border-radius:8px;'
-      + 'box-shadow:0 6px 18px rgba(0,0,0,.18);font-family:' + CFG.fonts.family + ';';
-    document.body.appendChild(tip);
+    // hover меняет только тултип, полный render() — на клик (RETRO 20).
+    function renderTip() {
+      if (!state.tip) { hideTip(); return; }
+      showTip(tipHTML(MODEL), state.tip.rect);
+    }
 
-    function setTooltip(t, pinned) {
+    // render() пересобирает разметку и подтягивает тултип. Слушатели навешены
+    // снаружи, один раз: узел overlay при innerHTML не пересоздаётся (RETRO 9).
+    function render() {
+      overlay.innerHTML = buildHTML();
+      renderTip();
+    }
+
+    // Якорь берём КАК ЕСТЬ, в координатах вьюпорта: тултип position:fixed.
+    function tipFrom(t, pinned) {
       var r = t.getBoundingClientRect();
-      tooltip = { kind: t.getAttribute('data-tip'), key: t.getAttribute('data-key') || null, rect: { left: r.left, top: r.top, width: r.width, height: r.height }, pinned: !!pinned };
+      return {
+        kind: t.getAttribute('data-tip'),
+        key: t.getAttribute('data-key') || null,
+        rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+        pinned: !!pinned
+      };
     }
 
-    function placeTooltip(el) {
-      var a = tooltip.rect;
-      var pad = 6;
-      el.style.left = '0px'; el.style.top = '0px';
-      var tipRect = el.getBoundingClientRect();
-      var left = a.left + a.width / 2 - tipRect.width / 2;
-      var top = a.top + a.height + 8;
-      if (top + tipRect.height > window.innerHeight - pad) top = a.top - tipRect.height - 8;
-      left = Math.max(pad, Math.min(left, window.innerWidth - tipRect.width - pad));
-      top = Math.max(pad, Math.min(top, window.innerHeight - tipRect.height - pad));
-      el.style.left = Math.round(left) + 'px';
-      el.style.top = Math.round(top) + 'px';
-    }
-
-    function renderTooltip(L) {
-      if (!tooltip) { tip.style.display = 'none'; tip.innerHTML = ''; return; }
-      tip.innerHTML = tooltipContent(L);
-      tip.style.display = 'block';
-      placeTooltip(tip);
-    }
-
-    // Обработчики (как в макете)
-    overlay.addEventListener('mouseover', function(e) {
+    function onOver(e) {
       var t = getTrigger(e.target);
-      if (!t || (tooltip && tooltip.pinned)) return;
-      setTooltip(t, false);
-      renderTooltip(MODEL);
-    });
+      if (!t || (state.tip && state.tip.pinned)) return;
+      state.tip = tipFrom(t, false);
+      renderTip();
+    }
 
-    overlay.addEventListener('mouseout', function(e) {
+    // Переход курсора на ДОЧЕРНИЙ узел той же цели — не повод гасить тултип,
+    // иначе он мигает посреди наведения.
+    function onOut(e) {
+      if (state.tip && state.tip.pinned) return;
       var t = getTrigger(e.target);
-      if (!t || (tooltip && tooltip.pinned)) return;
+      if (!t) return;
       if (e.relatedTarget && t.contains(e.relatedTarget)) return;
-      tooltip = null;
-      renderTooltip(MODEL);
-    });
+      state.tip = null;
+      renderTip();
+    }
 
-    overlay.addEventListener('click', function(e) {
+    function onClick(e) {
       var t = getTrigger(e.target);
-      if (!t) { tooltip = null; selectedKey = null; return; }
+      if (!t) {
+        state.tip = null;
+        state.selectedKey = null;
+        render();
+        return;
+      }
       var kind = t.getAttribute('data-tip');
       if (kind === 'bar') {
         var key = t.getAttribute('data-key');
-        if (selectedKey === key) { selectedKey = null; tooltip = null; }
-        else { selectedKey = key; setTooltip(t, true); }
-        renderTooltip(MODEL);
+        state.selectedKey = state.selectedKey === key ? null : key;
+        state.tip = state.selectedKey ? tipFrom(t, false) : null;
+        render();
         return;
       }
-      if (tooltip && tooltip.pinned && tooltip.kind === kind) { tooltip = null; }
-      else { setTooltip(t, true); }
-      renderTooltip(MODEL);
-    });
+      var pinnedSame = state.tip && state.tip.pinned && state.tip.kind === kind;
+      state.tip = pinnedSame ? null : tipFrom(t, true);
+      render();
+    }
 
-    overlay.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') { selectedKey = null; tooltip = null; renderTooltip(MODEL); }
-    });
+    overlay.addEventListener('mouseover', onOver);
+    overlay.addEventListener('mouseout', onOut);
+    overlay.addEventListener('click', onClick);
 
-    // Фиктивный render для validate.py (S14)
-    function render() { renderTooltip(MODEL); }
+    // Глобальные слушатели переживают перезапуск скрипта и накапливаются:
+    // старый снимаем явно, ссылку держим в state.
+    if (state.onWinResize) window.removeEventListener('resize', state.onWinResize);
+    state.onWinResize = function () {
+      if (!state.tip) return;
+      state.tip = null;
+      renderTip();
+    };
+    window.addEventListener('resize', state.onWinResize);
+
+    if (state.onKeyDown) document.removeEventListener('keydown', state.onKeyDown);
+    state.onKeyDown = function (e) {
+      if (e.key !== 'Escape') return;
+      state.selectedKey = null;
+      state.tip = null;
+      render();
+    };
+    document.addEventListener('keydown', state.onKeyDown);
+
     render();
 
     // ResizeObserver
