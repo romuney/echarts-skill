@@ -191,9 +191,17 @@ def check_kit(path, is_tpl):
          else missing_hard).append(fname)
 
     if missing_hard:
+        # Файл под своим именем — не мелочь: NOTES ищется по имени чарта,
+        # и «NOTES.md» вместо «<name>.NOTES.md» отключает все Z-проверки разом.
+        renamed = [f for f in missing_hard
+                   if os.path.isfile(os.path.join(folder, f.split('.', 1)[-1]))]
         add('K1', False, '',
             bad='комплект неполный, нет: ' + ', '.join(missing_hard)
-                + ' — болванка создана не целиком (ШАГ 1)')
+                + ' — болванка создана не целиком (ШАГ 1)'
+                + ('. Рядом лежит '
+                   + ', '.join(f.split('.', 1)[-1] for f in renamed)
+                   + ' — переименуй по имени чарта, иначе проверки его не видят'
+                   if renamed else ''))
     elif missing_soft:
         add('K1', False, '', warn=True,
             bad='нет ' + ', '.join(missing_soft) + ' — перенос сверять не с чем')
@@ -362,9 +370,10 @@ def check_fields(path):
     ticked = re.findall(r'^\s*-\s*\[[xXvV]\]\s*(\S.*)$', txt, re.M)
     add('F2', not ticked, 'чек-лист ручных настроек не отмечен за пользователя',
         warn=True,
-        bad='в FIELDS.md проставлено галочек: ' + str(len(ticked))
-            + ' (' + ticked[0][:40] + '...) — если это не отметил пользователь,'
-            + ' ты расписался за него: настройки в Proteus никто не делал')
+        bad='в FIELDS.md проставлено галочек: ' + str(len(ticked)) + ' («'
+            + (ticked[0][:40] if ticked else '') + '...») — если это не отметил'
+            + ' пользователь, ты расписался за него: настройки в Proteus'
+            + ' никто не делал')
 
 
 def check_report(path):
@@ -427,6 +436,22 @@ def main():
             else p.stderr.strip().splitlines()[0] if p.stderr else 'syntax error')
     except (FileNotFoundError, OSError):
         add('P5', False, 'node не найден — синтаксис НЕ проверен, проверь вручную', warn=True)
+
+    # ══ H3. Это вообще каркас скилла? ══
+    # Двадцать разрозненных FAIL агент чинит по одному и жжёт на этом контекст,
+    # хотя чинить нечего: файл написан мимо шаблона, и правки симптомов его
+    # туда не вернут. Один ранний вердикт вместо переборки (RETRO 52).
+    marks = {
+        'заголовков «// БЛОК N»': bool(re.search(r'^\s*//\s*-*\s*БЛОК\s+\d', raw, re.M)),
+        'глобального option': bool(re.search(r'^option\s*=', code, re.M)),
+        'window.__pvtState': '__pvtState' in bare,
+        'CFG.ns': bool(re.search(r'\bns\s*:\s*[\'"]', bare)),
+    }
+    lost = [k for k, v in marks.items() if not v]
+    add('H3', len(lost) < 2, 'каркас шаблона на месте',
+        bad='нет ' + ', '.join(lost) + ' — файл собран мимо TEMPLATE.chart.js.'
+            ' Остальные FAIL ниже — следствия: чинить их по одному бессмысленно,'
+            ' пересобирай по шаблону блоками 1→7 (RETRO 52)')
 
     # ══ C1. Блоки 1..7 по порядку ══
     # Только заголовки блоков вида "// ---------- БЛОК N", а не любое упоминание.
@@ -912,9 +937,14 @@ def main():
     # ══ M4. Заглушка не заполнена выдумками / боевой — заполнен ══
     mf = re.search(r'fields\s*:\s*', bare)
     n_fields = 0
-    if mf:
+    # Форма важна: шаблон объявляет fields ОБЪЕКТОМ { alias: 'sql_column' }.
+    # Массив имён — уже не он: по нему не построить ни автомок в smoke.mjs,
+    # ни сверку alias'ов с FIELDS.md, а искать '{' дальше по файлу нельзя —
+    # найдётся первый попавшийся объект и посчитается вместо полей.
+    as_array = bool(mf and bare[mf.end():mf.end() + 1] == '[')
+    if mf and not as_array:
         br5 = bare.find('{', mf.end())
-        if br5 != -1:
+        if br5 != -1 and not bare[mf.end():br5].strip():
             end5 = match_braces(bare, br5)
             if end5 != -1:
                 inner = bare[br5 + 1:end5]
@@ -935,7 +965,10 @@ def main():
     else:
         check_kit(path, False)
         add('M4', n_fields > 0, 'CFG.fields: ' + str(n_fields) + ' полей',
-            bad='CFG.fields пуст — данные не привязаны к SQL')
+            bad='CFG.fields задан массивом имён, а шаблон ждёт объект'
+                ' { alias: \'sql_column\' } — по массиву не работают ни автомок'
+                ' smoke.mjs, ни сверка alias\'ов (RETRO 52)' if as_array else
+                'CFG.fields пуст — данные не привязаны к SQL')
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
         add('M4b', not todo, 'нет незакрытых TODO',
             bad='остались плейсхолдеры → строки ' + ','.join(map(str, todo[:6])))
