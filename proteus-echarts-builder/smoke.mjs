@@ -502,7 +502,29 @@ async function probeTooltips(page, prefix, rootSel) {
     (s) => window.__smoke.triggers(s), rootSel || null);
 
   if (!triggers.length) {
-    skip(prefix + '1', 'триггеров тултипа ([data-tip]/[data-kind]/[data-action]) в разметке нет');
+    // Пустой N/A выглядит как «тултипов не предусмотрено», а на деле имя
+    // атрибута часто просто СВОЁ: pvt-data-tip, data-tip-kind (RETRO 56, 59).
+    // Показываем найденное — иначе пропуск проверки читается как её успех.
+    const near = await page.evaluate((s) => {
+      var root = s ? document.querySelector(s) : document.body;
+      if (!root) return [];
+      var out = {};
+      var all = root.querySelectorAll('*');
+      for (var i = 0; i < all.length; i++) {
+        var at = all[i].attributes;
+        for (var j = 0; j < at.length; j++) {
+          var n = at[j].name;
+          if (/(^|-)data-(tip|kind|action)/.test(n)
+              && n !== 'data-tip' && n !== 'data-kind' && n !== 'data-action') out[n] = 1;
+        }
+      }
+      return Object.keys(out).slice(0, 4);
+    }, rootSel || null);
+    skip(prefix + '1', near.length
+      ? 'триггеров [data-tip]/[data-kind]/[data-action] нет, но есть похожие имена: '
+        + near.join(', ') + ' — имя атрибута должно совпадать ЦЕЛИКОМ, иначе весь'
+        + ' тултиповый слой не проверяется (RETRO 56, 59)'
+      : 'триггеров тултипа ([data-tip]/[data-kind]/[data-action]) в разметке нет');
     return { triggers: [], visible: 0, results: [] };
   }
 

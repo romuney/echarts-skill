@@ -51,7 +51,7 @@ var rawData = (typeof data !== 'undefined' && Array.isArray(data)) ? data : [];
 // чтобы правки разных сессий не расходились.
 if (!window.__pvtState) window.__pvtState = {};
 var __S = window.__pvtState;
-if (!__S[CFG.ns]) __S[CFG.ns] = { tip: null };  // [ЗАПОЛНИ] остальные ключи
+if (!__S[CFG.ns]) __S[CFG.ns] = { tip: null, view: '' };  // [ЗАПОЛНИ] остальные ключи
 var state = __S[CFG.ns];
 
 function esc(s) {
@@ -229,12 +229,57 @@ function buildHTML() {
       renderTip();
     }
 
-    // [ЗАПОЛНИ] обработчики: hover → renderTip(); click → state + render().
-    // В onOut проверяй e.relatedTarget: переход курсора на ДОЧЕРНИЙ узел той же
-    // цели не должен гасить тултип, иначе он мигает посреди наведения.
-    function onOver(e) {}
-    function onOut(e) {}
-    function onClick(e) {}
+    // Имена атрибутов — ЧАСТЬ КОНТРАКТА, а не стиль: `data-tip`, `data-kind`,
+    // `data-action`, `data-view` — ровно эти, ЦЕЛИКОМ. По ним smoke.mjs ищет,
+    // что наводить и на что кликать. Своё имя (`data-tip-kind`) он не найдёт,
+    // а склейка с префиксом (`CFG.ns + '-data-tip'`) в DOM даёт `pvt-data-tip`:
+    // виджет при этом работает — свой же обработчик читает то же имя, — но
+    // ВЕСЬ тултиповый слой уходит в N/A, и экрана не видит никто (RETRO 56, 59).
+    // Префикс CFG.ns нужен КЛАССАМ, data-атрибутам — нет.
+    function trigger(node, attr) {
+      while (node && node !== overlay) {
+        if (node.getAttribute && node.getAttribute(attr) !== null) return node;
+        node = node.parentNode;
+      }
+      return null;
+    }
+
+    function onOver(e) {
+      var el = trigger(e.target, 'data-tip');
+      if (!el) return;
+      // Якорь — rect ЦЕЛИ как есть. [ЗАПОЛНИ] ключи, по которым renderTip
+      // соберёт содержимое: kind — что за элемент, key — какой именно.
+      state.tip = {
+        rect: el.getBoundingClientRect(),
+        kind: el.getAttribute('data-kind') || '',
+        key: el.getAttribute('data-tip') || ''
+      };
+      renderTip();
+    }
+
+    function onOut(e) {
+      var el = trigger(e.target, 'data-tip');
+      if (!el) return;
+      // Переход курсора на ДОЧЕРНИЙ узел той же цели тултип не гасит,
+      // иначе он мигает посреди наведения.
+      var to = e.relatedTarget;
+      while (to) {
+        if (to === el) return;
+        to = to.parentNode;
+      }
+      state.tip = null;
+      hideTip();
+    }
+
+    function onClick(e) {
+      // Переключалка вкладок: кнопка помечена data-view, панель — тем же
+      // значением. [ЗАПОЛНИ] остальные действия по data-action.
+      var tab = trigger(e.target, 'data-view');
+      if (tab) {
+        state.view = tab.getAttribute('data-view');
+        render();
+      }
+    }
 
     overlay.addEventListener('mouseover', onOver);
     overlay.addEventListener('mouseout', onOut);
