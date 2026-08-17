@@ -250,11 +250,13 @@ def check_notes(path):
     mm = re.search(r'M\s*=\s*\*{0,2}\s*(\d+)', s2)
     claimed = int(mm.group(1)) if mm else None
 
+    # Незаполненный §2 закрывает только проверки про полноту чтения. Остальные
+    # Z гоняются всегда: раньше пустое M глушило и их — тем громче, чем меньше
+    # агент вёл NOTES вообще (RETRO 52).
     if claimed is None:
         add('Z1', False, '', warn=True,
             bad='NOTES §2 не заполнен — полнота чтения макета не доказана')
-        return
-    if real is None:
+    elif real is None:
         add('Z1', False, '', warn=True,
             bad='нет ' + os.path.basename(html_path) + ' — M=' + str(claimed) + ' не с чем сверить')
     else:
@@ -268,10 +270,11 @@ def check_notes(path):
     # Диапазоны обязаны покрыть 1..real без дыр.
     target = real if real is not None else claimed
     spans = []
-    for mr in re.finditer(r'(\d+)\s*[-–—]\s*(\d+)', s2):
-        a, b = int(mr.group(1)), int(mr.group(2))
-        if a <= b:
-            spans.append((a, b))
+    if target is not None:
+        for mr in re.finditer(r'(\d+)\s*[-–—]\s*(\d+)', s2):
+            a, b = int(mr.group(1)), int(mr.group(2))
+            if a <= b:
+                spans.append((a, b))
     if spans:
         covered, cur = [], None
         for a, b in sorted(spans):
@@ -300,6 +303,18 @@ def check_notes(path):
         bad='в реестре NOTES §1 осталось незакрытых строк: ' + str(len(open_rows))
             + ' (TODO/ASK) — элементы макета не перенесены')
 
+    # §1 вообще не начат, а код уже пишется: память подменена контекстом чата.
+    # Считаем только строки-данные: заголовок и разделитель таблицы не в счёт.
+    filled = [r for r in re.findall(r'^\|(?!\s*[-:# ]*\|)(.*)$', s1, re.M)
+              if len([c for c in r.split('|')[1:3] if c.strip()]) == 2]
+    body = len([l for l in open(path, encoding='utf-8', errors='replace')
+                if l.strip() and not l.strip().startswith('//')])
+    add('Z2b', bool(filled) or body < 120,
+        'NOTES §1 начат до кода',
+        bad='реестр NOTES §1 пуст, а в чарте уже ' + str(body) + ' строк кода — '
+            + 'макет переносится по памяти чата, возобновление после обрыва'
+            + ' невозможно (RETRO 52)')
+
     # §5: все блоки DONE.
     s5 = notes_section(txt, 5)
     undone = re.findall(r'^\|\s*[1-7]\s*\|[^|]*\|\s*(TODO|DOING)\s*\|', s5, re.M)
@@ -313,6 +328,34 @@ def check_notes(path):
         add('Z4', False, '', warn=True,
             bad='в NOTES §6 незакрытых хвостов: ' + str(len(tails))
                 + ' — закрой или проговори их пользователю в финальном ответе')
+
+
+def check_fields(path):
+    """F1: FIELDS.md — сдаточный документ по шаблону, а не файл своего сочинения.
+
+    Реальный случай (RETRO 52): агент выдал FIELDS.md из собственных разделов —
+    там был реестр элементов макета (место которому в NOTES §1), но не было ни
+    чек-листа ручных настроек Proteus, ни колонки «Добавлено в Измерения».
+    Пользователь получил документ, по которому виджет НЕ настроить: без ручного
+    добавления полей в «Измерения» их просто нет в `data`.
+    """
+    fields_path = os.path.join(os.path.dirname(os.path.abspath(path)), 'FIELDS.md')
+    master = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          'templates', 'TEMPLATE.FIELDS.md')
+    if not os.path.isfile(fields_path) or not os.path.isfile(master):
+        return   # отсутствие файла — забота K1
+    need = re.findall(r'^##\s*(.+?)\s*$', open(master, encoding='utf-8').read(), re.M)
+    if not need:
+        return
+    txt = open(fields_path, encoding='utf-8', errors='replace').read()
+    # Заголовок ищем по первым двум словам: хвост в скобках агент вправе убрать.
+    missing = [h for h in need
+               if not re.search(r'^##\s*' + re.escape(' '.join(h.split()[:2])),
+                                txt, re.M | re.I)]
+    add('F1', not missing, 'FIELDS.md по шаблону: все ' + str(len(need)) + ' раздела',
+        bad='в FIELDS.md нет разделов: ' + '; '.join(missing)
+            + ' — документ написан в своём формате, чек-лист ручных настроек'
+            + ' Proteus до пользователя не дошёл (RETRO 52)')
 
 
 def check_report(path):
@@ -887,8 +930,9 @@ def main():
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
         add('M4b', not todo, 'нет незакрытых TODO',
             bad='остались плейсхолдеры → строки ' + ','.join(map(str, todo[:6])))
-        # ══ Z. Полнота чтения макета и формат сдачи ══
+        # ══ Z/F. Полнота чтения макета и формат сдачи ══
         check_notes(path)
+        check_fields(path)
         check_report(path)
 
     # ── отчёт ──
