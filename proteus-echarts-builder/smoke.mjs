@@ -626,6 +626,48 @@ async function main() {
       skip('E13', 'корень или хост не найдены — растяжение не мерилось');
     }
 
+    // ── E14: содержимое SVG не вылезает за viewBox ───────────────────────────
+    // Шаг и масштаб повторяющегося блока выводят «на глаз» по одному образцу:
+    // 26px вместо 27, центр 316 вместо 320. На первом баре расхождение
+    // незаметно, к десятому накапливается, и последний элемент уезжает
+    // за границу viewBox — молча, потому что SVG просто обрезает (RETRO 55).
+    const svgOut = await page.evaluate((n) => {
+      var root = document.querySelector('.' + n + '-root') || document.body;
+      var out = [];
+      var seen = 0;
+      var svgs = root.querySelectorAll('svg');
+      for (var i = 0; i < svgs.length; i++) {
+        var s = svgs[i];
+        var vb = s.viewBox && s.viewBox.baseVal;
+        if (!vb || !vb.width || !vb.height) continue;
+        var bb;
+        try { bb = s.getBBox(); } catch (e) { continue; }
+        if (!bb || (!bb.width && !bb.height)) continue;
+        seen++;
+        var over = [];
+        if (bb.x < vb.x - 1) over.push('слева на ' + Math.round(vb.x - bb.x));
+        if (bb.y < vb.y - 1) over.push('сверху на ' + Math.round(vb.y - bb.y));
+        if (bb.x + bb.width > vb.x + vb.width + 1)
+          over.push('справа на ' + Math.round(bb.x + bb.width - vb.x - vb.width));
+        if (bb.y + bb.height > vb.y + vb.height + 1)
+          over.push('снизу на ' + Math.round(bb.y + bb.height - vb.y - vb.height));
+        if (over.length) {
+          out.push('svg#' + (i + 1) + ' (viewBox ' + Math.round(vb.width) + '×'
+            + Math.round(vb.height) + '): ' + over.join(', ') + ' px');
+        }
+      }
+      return seen ? out : null;      // не «уместилось», а «мерить было нечего»
+    }, ns);
+    if (svgOut === null) {
+      skip('E14', 'SVG с viewBox в разметке нет — обрезание не мерилось');
+    } else {
+      check('E14', svgOut.length === 0, 'содержимое SVG умещается в viewBox',
+        'содержимое вылезает за viewBox и обрезается: ' + svgOut.slice(0, 3).join('; ')
+          + ' — шаг или масштаб повторяющегося блока накапливают ошибку '
+          + '(RETRO 55). Сними формулу с ДВУХ копий макета и проверь '
+          + 'на ПОСЛЕДНЕЙ');
+    }
+
     await page.close();
 
     // ── ФАЗА 2: пустые данные ────────────────────────────────────────────────

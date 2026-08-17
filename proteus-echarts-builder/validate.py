@@ -816,6 +816,22 @@ def main():
                 + ' — и ни одна строка JS это не снимает. Тултип отрисуется '
                   'невидимым: события, координаты и текст будут верные (RETRO 44)')
 
+    # ══ T7. Имя атрибута-триггера — часть контракта ══
+    # smoke.mjs ищет интерактив селектором [data-tip],[data-kind],[data-action]:
+    # это имена атрибутов ЦЕЛИКОМ, а не префиксы. Своё имя (data-tip-kind,
+    # data-hint) он не находит, и браузерные проверки B1-B5 не падают,
+    # а ПРОПУСКАЮТСЯ — отчёт выглядит полным, экрана никто не видел (RETRO 56).
+    if html_body is not None:
+        found = sorted(set(re.findall(r'\bdata-[\w-]+', html_body)))
+        canon = [a for a in found if a in ('data-tip', 'data-kind', 'data-action')]
+        add('T7', not found or bool(canon),
+            'триггеры помечены именами, которые видит smoke.mjs',
+            warn=True,
+            bad='в разметке есть ' + ', '.join(found[:4])
+                + ', но ни одного data-tip/data-kind/data-action — smoke.mjs ищет '
+                  'ровно эти имена и интерактив не найдёт: проверки тултипа уйдут '
+                  'в N/A вместо FAIL (RETRO 56)')
+
     # ══ S8. Скрытие не через hidden ══
     hid = [i for i, l in enumerate(code_lines, 1) if re.search(r'\.hidden\s*=', l)]
     add('S8', not hid, 'скрытие через style',
