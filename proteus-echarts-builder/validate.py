@@ -147,6 +147,86 @@ def notes_section(txt, num):
     return m.group(1) if m else ''
 
 
+# Комплект болванки: файл рядом с <name>.chart.js -> шаблон, из которого он
+# обязан быть СКОПИРОВАН. None — файл пользовательский, его содержимое не наше
+# дело (макет и SQL приносит пользователь, bootstrap кладёт лишь пустышку).
+KIT = [
+    ('{name}.html', None),
+    ('{name}.data.sql', None),
+    ('{name}.NOTES.md', 'TEMPLATE.NOTES.md'),
+    ('FIELDS.md', 'TEMPLATE.FIELDS.md'),
+]
+KIT_CHART = 'TEMPLATE.chart.js'
+
+
+def _norm(txt):
+    """Сравнение копии с шаблоном не должно падать из-за CRLF и хвостов пробелов."""
+    return '\n'.join(l.rstrip() for l in txt.replace('\r\n', '\n').split('\n')).strip()
+
+
+def check_kit(path, is_tpl):
+    """K1/K2: болванка создана ЦЕЛИКОМ и СКОПИРОВАНА, а не написана по памяти.
+
+    Реальный случай (RETRO 51): bootstrap.py заблокировала среда, агент собрал
+    болванки вручную — и недосчитался <name>.html, зато выдумал mock.json,
+    а NOTES/FIELDS сочинил своими словами. validate.py при этом отчитался
+    «46/49 PASS»: он смотрел только на .chart.js и пропажи не видел.
+    """
+    if not path.endswith('.chart.js'):
+        return   # файл назван не по контракту — комплекта вокруг него нет
+    name = os.path.basename(path)[:-len('.chart.js')]
+    if not name:
+        return
+    folder = os.path.dirname(os.path.abspath(path))
+    tpl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates')
+
+    missing_hard, missing_soft = [], []
+    for pattern, _ in KIT:
+        fname = pattern.format(name=name)
+        if os.path.isfile(os.path.join(folder, fname)):
+            continue
+        # Макет — единственный файл, которого может не быть по делу: правка
+        # чужого графика без исходного HTML это не поломка комплекта.
+        (missing_soft if (fname.endswith('.html') and not is_tpl)
+         else missing_hard).append(fname)
+
+    if missing_hard:
+        add('K1', False, '',
+            bad='комплект неполный, нет: ' + ', '.join(missing_hard)
+                + ' — болванка создана не целиком (ШАГ 1)')
+    elif missing_soft:
+        add('K1', False, '', warn=True,
+            bad='нет ' + ', '.join(missing_soft) + ' — перенос сверять не с чем')
+    else:
+        add('K1', True, 'комплект файлов проекта на месте')
+
+    if not is_tpl or not os.path.isdir(tpl_dir):
+        return
+
+    # K2 только для болванки и только для файлов, которые скилл кладёт сам.
+    diverged = []
+    for pattern, tpl in [('{name}.chart.js', KIT_CHART)] + KIT:
+        if not tpl:
+            continue
+        fname = pattern.format(name=name)
+        dst, src = os.path.join(folder, fname), os.path.join(tpl_dir, tpl)
+        if not (os.path.isfile(dst) and os.path.isfile(src)):
+            continue
+        try:
+            a = open(dst, encoding='utf-8', errors='replace').read()
+            b = open(src, encoding='utf-8', errors='replace').read()
+        except OSError:
+            continue
+        if _norm(a) != _norm(b):
+            diverged.append(fname)
+
+    add('K2', not diverged, 'болванка совпадает с templates/',
+        bad='не копия шаблона: ' + ', '.join(diverged)
+            + ' — болванка написана по памяти, инварианты каркаса потеряны'
+            + ' (RETRO 51). Возьми файл из templates/ как есть; если он уже'
+            + ' заполняется — гоняй validate.py БЕЗ --template')
+
+
 def check_notes(path):
     """Z-проверки: реально ли прочитан макет и закрыт ли реестр.
 
@@ -799,7 +879,9 @@ def main():
     if is_tpl:
         add('M4', n_fields == 0, 'болванка: CFG.fields пуст',
             bad='CFG.fields содержит ' + str(n_fields) + ' выдуманных полей')
+        check_kit(path, True)
     else:
+        check_kit(path, False)
         add('M4', n_fields > 0, 'CFG.fields: ' + str(n_fields) + ' полей',
             bad='CFG.fields пуст — данные не привязаны к SQL')
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
