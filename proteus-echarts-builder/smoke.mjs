@@ -89,9 +89,49 @@ if (flags.has('--env')) {
   }
 }
 
+// ── --selftest: проверка САМОГО чекера ───────────────────────────────────────
+// Проверка, которая ничего не проверяет, выглядит ровно как проверка, которая
+// всё прошла. В fixtures/ лежат виджеты с ИЗВЕСТНЫМИ багами и ожидаемым
+// вердиктом; если smoke перестанет их видеть, здесь будет FAIL, а не тишина.
+if (flags.has('--selftest')) {
+  const here = path.dirname(new URL(import.meta.url).pathname);
+  const dir = path.join(here, 'fixtures');
+  const expPath = path.join(dir, 'EXPECT.json');
+  if (!fs.existsSync(expPath)) {
+    console.log('Нет ' + expPath + ' — самопроверка невозможна.');
+    process.exit(2);
+  }
+  const exp = JSON.parse(fs.readFileSync(expPath, 'utf8'));
+  console.log('Самопроверка smoke.mjs по фикстурам:');
+  let bad = 0;
+  for (const [file, want] of Object.entries(exp)) {
+    if (file === '_') continue;
+    const fx = path.join(dir, file);
+    if (!fs.existsSync(fx)) { console.log(' X  ' + file + ' — файла нет'); bad++; continue; }
+    let out = '';
+    try {
+      out = execSync('node ' + JSON.stringify(process.argv[1]) + ' ' + JSON.stringify(fx),
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { out = (e.stdout || '') + (e.stderr || ''); }
+    const got = [...out.matchAll(/^ X\s+(\S+)\s+FAIL/gm)].map((m) => m[1]).sort();
+    const wantSorted = [...want.fail].sort();
+    const ok = got.join(',') === wantSorted.join(',');
+    if (!ok) bad++;
+    console.log(' ' + (ok ? 'v' : 'X') + '  ' + file.padEnd(24)
+      + 'ждали FAIL [' + (wantSorted.join(',') || '—') + ']'
+      + ', получили [' + (got.join(',') || '—') + ']'
+      + (ok ? '' : '  ← ' + want.note));
+  }
+  console.log(bad === 0
+    ? 'Итог: чекер видит все зашитые баги (код 0).'
+    : 'Итог: расхождений ' + bad + ' — smoke.mjs проверяет НЕ то, что заявлено (код 1).');
+  process.exit(bad === 0 ? 0 : 1);
+}
+
 if (!paths.length) {
   console.log('Укажи путь: node smoke.mjs <path>.chart.js [--mock rows.json] [--vs макет.html]');
   console.log('Проверка окружения без чарта: node smoke.mjs --env');
+  console.log('Самопроверка чекера по фикстурам: node smoke.mjs --selftest');
   process.exit(2);
 }
 const chartPath = path.resolve(paths[0]);
@@ -197,6 +237,60 @@ const PROBE = `(function () {
     return op;
   }
   function slice(x) { return Array.prototype.slice.call(x); }
+  function vis(el) { return eff(el) > 0.01; }
+  // Координаты для НАСТОЯЩЕГО клика мышью. Виджет живёт в ячейке с overflow:auto
+  // и бывает выше вьюпорта: у Test5 вкладки лежали на y=642 при вьюпорте 620,
+  // и все клики уходили мимо экрана — переключение выглядело сломанным, будучи
+  // исправным. Поэтому сначала прокручиваем элемент в поле зрения, и только
+  // потом меряем. Не поместился и после прокрутки — честный null, а не FAIL.
+  function atOf(el) {
+    if (el.scrollIntoView) el.scrollIntoView({ block: 'center', inline: 'center' });
+    var r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1) return null;
+    var cx = Math.round(r.left + r.width / 2), cy = Math.round(r.top + r.height / 2);
+    if (cx < 0 || cy < 0 || cx > window.innerWidth - 1 || cy > window.innerHeight - 1) return null;
+    return { cx: cx, cy: cy };
+  }
+  // Признак того, что группа соседних контролов — именно ПЕРЕКЛЮЧАЛКА,
+  // а не набор кнопок-действий.
+  function swWhy(els) {
+    var why = [];
+    for (var i = 0; i < els.length; i++) {
+      var e = els[i];
+      if (e.getAttribute('role') === 'tab') why.push('role=tab');
+      if (e.hasAttribute('aria-selected')) why.push('aria-selected');
+      if (e.hasAttribute('data-view')) why.push('data-view');
+      if (/(^|[\\s_-])(active|selected|current|is-on)([\\s_-]|$)/i.test(e.className || '')) {
+        why.push('класс выбора');
+      }
+    }
+    return why.length ? why.filter(function (v, i, a) { return a.indexOf(v) === i; }).join('+') : '';
+  }
+  function swGroups(rootSel) {
+    var root = rootSel ? document.querySelector(rootSel) : document.body;
+    if (!root) return [];
+    var sel = 'button,[role="tab"],[data-view],[data-action],[aria-selected]';
+    var all = slice(root.querySelectorAll(sel)).filter(function (el) {
+      var tag = el.tagName.toLowerCase();
+      if (tag === 'select' || tag === 'option') return false;
+      var r = el.getBoundingClientRect();
+      return vis(el) && r.width > 0 && r.height > 0;
+    });
+    var groups = [];
+    all.forEach(function (el) {
+      var g = null;
+      for (var i = 0; i < groups.length; i++) {
+        if (groups[i].parent === el.parentNode) { g = groups[i]; break; }
+      }
+      if (!g) { g = { parent: el.parentNode, els: [] }; groups.push(g); }
+      g.els.push(el);
+    });
+    return groups.filter(function (g) {
+      if (g.els.length < 2) return false;
+      g.why = swWhy(g.els);
+      return !!g.why;
+    });
+  }
   function tipish(el) {
     if (el.getAttribute && el.getAttribute('role') === 'tooltip') return true;
     var c = (el.className && el.className.toString()) || '';
@@ -280,6 +374,80 @@ const PROBE = `(function () {
     // Инвентарь видимого: то, что можно сравнить у макета и у чарта, не зная
     // ни их имён классов, ни их данных. Цифры в текстах маскируются (13 -> ##),
     // поэтому подписи сравниваются, а значения — нет.
+    // ── Переключалки: вкладки, табы, выпадашки ──────────────────────────────
+    // Видимость считается ЧЕСТНО: display, visibility И opacity, с учётом
+    // предков. Экран, спрятанный двумя свойствами и показанный одним, для
+    // пользователя невидим — и здесь тоже (RETRO 44).
+    screen: function (rootSel) {
+      var root = rootSel ? document.querySelector(rootSel) : document.body;
+      if (!root) return '';
+      var txt = [], keys = {}, n = 0;
+      slice(root.querySelectorAll('*')).forEach(function (el) {
+        var tag = el.tagName.toLowerCase();
+        if (tag === 'style' || tag === 'script') return;
+        if (!vis(el)) return;
+        n++;
+        var k = el.getAttribute('data-view') || el.getAttribute('data-kind')
+                || el.getAttribute('data-tip');
+        if (k) keys[k] = 1;
+        var own = '';
+        slice(el.childNodes).forEach(function (c) { if (c.nodeType === 3) own += c.nodeValue; });
+        own = own.replace(/\\s+/g, ' ').trim();
+        if (own) txt.push(own);
+      });
+      return txt.join('|') + '#n=' + n + '#k=' + Object.keys(keys).sort().join(',');
+    },
+    // Группа-переключалка = соседи по родителю, у которых есть ПРИЗНАК выбора:
+    // role=tab, aria-selected, data-view или класс вида active/selected/current.
+    // Без такого признака три кнопки рядом — это «Экспорт/Печать/Сброс»,
+    // и требовать от них смены экрана нельзя.
+    switchers: function (rootSel) {
+      return swGroups(rootSel).map(function (g, i) {
+        return {
+          i: i, n: g.els.length,
+          why: g.why,
+          labels: g.els.slice(0, 8).map(function (e) {
+            return (e.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 24)
+              || e.getAttribute('data-view') || e.getAttribute('data-action') || '?';
+          })
+        };
+      });
+    },
+    switcherAt: function (rootSel, gi, mi) {
+      var g = swGroups(rootSel)[gi];
+      if (!g || !g.els[mi]) return null;
+      return atOf(g.els[mi]);
+    },
+    triggerAt: function (rootSel, i) {
+      var root = rootSel ? document.querySelector(rootSel) : document;
+      if (!root) return null;
+      var el = root.querySelectorAll('[data-tip],[data-kind],[data-action]')[i];
+      return el ? atOf(el) : null;
+    },
+    // Панели = носители data-view / role=tabpanel, которые сами НЕ контролы.
+    panels: function (rootSel) {
+      var root = rootSel ? document.querySelector(rootSel) : document.body;
+      if (!root) return null;
+      var all = slice(root.querySelectorAll('[data-view],[role="tabpanel"]'))
+        .filter(function (el) {
+          var tag = el.tagName.toLowerCase();
+          return tag !== 'button' && tag !== 'a' && tag !== 'select'
+            && el.getAttribute('role') !== 'tab';
+        });
+      if (all.length < 2) return null;
+      return { total: all.length, visible: all.filter(vis).length };
+    },
+    selects: function (rootSel) {
+      var root = rootSel ? document.querySelector(rootSel) : document.body;
+      if (!root) return [];
+      return slice(root.querySelectorAll('select')).map(function (s, i) {
+        return {
+          i: i,
+          values: slice(s.options).map(function (o) { return o.value; }).slice(0, 5),
+          label: (s.getAttribute('name') || s.className || 'select') + '#' + i
+        };
+      }).filter(function (s) { return s.values.length >= 2; });
+    },
     inventory: function (rootSel) {
       var root = rootSel ? document.querySelector(rootSel) : document.body;
       if (!root) return null;
@@ -416,7 +584,7 @@ async function main() {
     console.log('  или глобально:');
     console.log('    npm i -g playwright && npx playwright install chromium');
     console.log('');
-    console.log('В отчёте SELF_CHECK проставь B1-B5 = N/A с причиной «нет playwright»');
+    console.log('В отчёте SELF_CHECK проставь B1-B6 = N/A с причиной «нет playwright»');
     console.log('и скажи об этом пользователю прямо: часть проверок не выполнялась.');
     return 2;
   }
@@ -550,6 +718,94 @@ async function main() {
       skip('E12', 'триггеров нет');
     }
 
+    // ── E15/E16: вкладки и переключатели реально МЕНЯЮТ ЭКРАН ────────────────
+    // E7 доказывает только, что разметка после клика стала другой: сменившегося
+    // класса `active` на кнопке для этого достаточно. Виджет, где кнопка B
+    // подсвечивается, а на экране остаётся экран A, проходил E7 зелёным.
+    // Здесь сравнивается ВИДИМОЕ содержимое: если все вкладки группы дают один
+    // и тот же экран — переключение мёртвое.
+    const rootSel = '.' + ns + '-overlay';
+    const groups = await page.evaluate((s) => window.__smoke.switchers(s), rootSel);
+    if (!groups.length) {
+      skip('E15', 'групп-переключалок нет (нужны соседние контролы с role=tab / '
+        + 'aria-selected / data-view / классом выбора)');
+      skip('E16', 'групп-переключалок нет — панели не переключались');
+    } else {
+      const dead = [], partial = [], unreachable = [];
+      let panelBad = null, panelSeen = false;
+      for (const g of groups.slice(0, 3)) {
+        const sigs = [];
+        let missed = 0;
+        for (let mi = 0; mi < Math.min(g.n, 6); mi++) {
+          const pos = await page.evaluate(([s, gi, m]) => window.__smoke.switcherAt(s, gi, m),
+            [rootSel, g.i, mi]);
+          if (!pos) { missed++; continue; }
+          await page.mouse.click(pos.cx, pos.cy);
+          await wait(220);
+          sigs.push(await page.evaluate((s) => window.__smoke.screen(s), rootSel));
+          const pn = await page.evaluate((s) => window.__smoke.panels(s), rootSel);
+          if (pn) {
+            panelSeen = true;
+            if (pn.visible !== 1 && !panelBad) {
+              panelBad = 'после «' + (g.labels[mi] || mi) + '» видимых панелей: '
+                + pn.visible + ' из ' + pn.total;
+            }
+          }
+        }
+        const uniq = new Set(sigs).size;
+        const name = '«' + g.labels.slice(0, 4).join(' / ') + '»';
+        // До элемента не дотянулись мышью — это НЕ доказательство поломки.
+        if (sigs.length < 2) { unreachable.push(name + ' (не кликнулось: ' + missed + ')'); continue; }
+        if (uniq === 1) dead.push(name + ' (' + g.why + ')');
+        else if (uniq < sigs.length) {
+          partial.push(name + ': разных экранов ' + uniq + ' из ' + sigs.length);
+        }
+      }
+      if (unreachable.length && !dead.length && !partial.length) {
+        skip('E15', 'до контролов не удалось дотянуться кликом: ' + unreachable.join('; '));
+        skip('E16', 'переключение не выполнялось');
+      } else {
+      check('E15', dead.length === 0, 'переключалки меняют экран ('
+        + groups.slice(0, 3).map((g) => g.n + ' шт.').join(', ') + ')',
+        'все вкладки группы показывают ОДИН И ТОТ ЖЕ экран: ' + dead.join('; ')
+          + ' — переключение не работает, хотя разметка после клика меняется '
+          + '(E7 такое пропускает). Частая причина: экран спрятан двумя '
+          + 'свойствами, а показ снимает одно (RETRO 44, 57)');
+      if (partial.length) {
+        warn('E15b', 'часть вкладок даёт одинаковый экран: ' + partial.join('; ')
+          + ' — либо так и задумано (нет данных), либо переключение частичное');
+      }
+      if (!panelSeen) skip('E16', 'панелей [data-view]/[role=tabpanel] в разметке нет');
+      else {
+        check('E16', !panelBad, 'в каждый момент видима ровно одна панель',
+          panelBad + ' — панели показываются одновременно либо не показывается '
+            + 'ни одна (RETRO 57)');
+      }
+      }
+    }
+
+    // ── E17: выпадашки ───────────────────────────────────────────────────────
+    const sels = await page.evaluate((s) => window.__smoke.selects(s), rootSel);
+    if (!sels.length) {
+      skip('E17', '<select> с двумя и более вариантами в разметке нет');
+    } else {
+      const deadSel = [];
+      for (const s of sels.slice(0, 3)) {
+        const sigs = [];
+        for (const v of s.values) {
+          try {
+            await page.selectOption('.' + ns + '-root select >> nth=' + s.i, v);
+          } catch (e) { continue; }
+          await wait(220);
+          sigs.push(await page.evaluate((r) => window.__smoke.screen(r), rootSel));
+        }
+        if (sigs.length >= 2 && new Set(sigs).size === 1) deadSel.push(s.label);
+      }
+      check('E17', deadSel.length === 0, 'выпадашки меняют экран (' + sels.length + ' шт.)',
+        'смена значения не меняет экран: ' + deadSel.join(', ')
+          + ' — обработчик change не навешен либо не вызывает render() (RETRO 57)');
+    }
+
     // ── E7: клик пересобирает разметку ───────────────────────────────────────
     // Ловит «фиктивный render()», который не вызывает buildHTML(): интерактив
     // формально есть, но на экране после клика ничего не меняется (RETRO 45).
@@ -558,7 +814,12 @@ async function main() {
       let changed = false;
       const before = await page.evaluate((n) => window.__smoke.overlayHTML(n), ns);
       for (const c of clickable.slice(0, 3)) {
-        await page.mouse.click(c.cx, c.cy);
+        // координаты берём заново, с прокруткой: виджет бывает выше вьюпорта,
+        // и клик по исходному rect уходит мимо экрана
+        const pos = await page.evaluate(([s, i]) => window.__smoke.triggerAt(s, i),
+          ['.' + ns + '-overlay', c.i]);
+        if (!pos) continue;
+        await page.mouse.click(pos.cx, pos.cy);
         await wait(200);
         const after = await page.evaluate((n) => window.__smoke.overlayHTML(n), ns);
         if (after !== before) { changed = true; break; }
