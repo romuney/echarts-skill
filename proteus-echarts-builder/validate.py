@@ -106,6 +106,52 @@ def line_of(src, idx):
     return src.count('\n', 0, idx) + 1
 
 
+def string_spans(code, bare, start=0, end=None):
+    """Границы строковых литералов: [(i_кавычка, i_кавычка, символ)].
+
+    Кавычки лексер оставляет в ОБЕИХ проекциях, а содержимое и экранированные
+    пары затирает только в bare — поэтому парная кавычка ищется в bare и не
+    ловится ни на апостроф внутри строки, ни на смешение ' и " в одной функции.
+    Разбор строк регуляркой по коду на таком смешении разъезжается и выдаёт
+    куски КОДА за содержимое строк (RETRO 60).
+    """
+    if end is None:
+        end = len(bare)
+    out = []
+    i = start
+    while i < end:
+        ch = bare[i]
+        if ch in ('"', "'", '`'):
+            j = bare.find(ch, i + 1)
+            if j == -1 or j >= end:
+                break
+            out.append((i, j, ch))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+
+def comments_of(src, code):
+    """Тексты комментариев целиком, вместе с пробелами внутри.
+
+    Начало комментария лексер затирает двумя пробелами, а строки и регулярки
+    оставляет целыми — поэтому `//` внутри строки сюда не попадает.
+    """
+    out = []
+    for m in re.finditer(r'//|/\*', src):
+        i = m.start()
+        if code[i:i + 2] != '  ':
+            continue
+        if src[i + 1] == '/':
+            j = src.find('\n', i)
+        else:
+            j = src.find('*/', i + 2)
+            j = -1 if j == -1 else j + 2
+        out.append(src[i:len(src) if j == -1 else j])
+    return out
+
+
 def match_braces(bare, start):
     """От индекса открывающей '{' в bare вернуть индекс парной '}' или -1."""
     depth = 0
@@ -126,8 +172,8 @@ _FN_FORMS = [
 ]
 
 
-def find_function(code, bare, name):
-    """Тело функции по любой из форм объявления. None — функция не найдена."""
+def find_span(code, bare, name):
+    """Границы тела функции (i_после_{, i_}) или None."""
     for form in _FN_FORMS:
         m = re.search(form.format(n=re.escape(name)), bare)
         if not m:
@@ -138,8 +184,14 @@ def find_function(code, bare, name):
         end = match_braces(bare, br)
         if end == -1:
             continue
-        return code[br + 1:end]
+        return (br + 1, end)
     return None
+
+
+def find_function(code, bare, name):
+    """Тело функции по любой из форм объявления. None — функция не найдена."""
+    sp = find_span(code, bare, name)
+    return None if sp is None else code[sp[0]:sp[1]]
 
 
 def notes_section(txt, num):
@@ -329,6 +381,32 @@ def check_notes(path):
     add('Z3', not undone, 'NOTES §5: все блоки DONE',
         bad='в NOTES §5 блоков не DONE: ' + str(len(undone)))
 
+    # §4: вопрос задан, ответа нет, а сборка идёт дальше.
+    # В Test6 три вопроса по SQL ушли пользователю и остались без ответа, после
+    # чего в §4 появилось «Решено без ответа», а в готовый виджет приехали
+    # прочерки «—» на месте среднего возраста и медианы. Вопрос без ответа
+    # блокирует ровно тот элемент, о котором спрашивали (RETRO 62).
+    s4 = notes_section(txt, 4)
+    dangling = []
+    for row in re.findall(r'^\|(.+)\|\s*$', s4, re.M):
+        cells = [c.strip() for c in row.split('|')]
+        if len(cells) < 4 or not cells[1]:
+            continue
+        if re.match(r'^[-: ]+$', cells[1]) or cells[1].lower().startswith('дата'):
+            continue
+        answer = cells[2]
+        if not answer or answer in ('—', '-', '–', '?', 'нет', 'н/д'):
+            dangling.append(cells[1][:50])
+    if re.search(r'без ответа|не дожид|ответа нет', s4, re.I):
+        dangling.append('в §4 записано «решено без ответа»')
+    add('Z5b', not dangling, 'вопросов без ответа пользователя нет',
+        bad='в NOTES §4 вопрос без ответа: «' + '», «'.join(dangling[:2])
+            + '» — решение за пользователя означает виджет, собранный не по ТЗ '
+              '(в Test6 так приехали прочерки «—» вместо среднего возраста). '
+              'Дождись ответа; если спрашивать было не нужно — напиши это '
+              'в колонке ответа словами, прочерк там читается как «спросил '
+              'и не дождался» (RETRO 62)')
+
     # §6: открытые хвосты.
     s6 = notes_section(txt, 6)
     tails = re.findall(r'^\s*-\s*\[ \]\s*\S', s6, re.M)
@@ -400,15 +478,76 @@ def check_report(path):
             + ' обязательных пунктов (' + ', '.join(missing[:6])
             + '...) — отчёт написан в своём формате, чек-лист не пройден (RETRO 43)')
 
+    # ── Z6b. N/A в разделе B — только по причине из СРЕДЫ ──
+    # «smoke.mjs отсутствует в папке проекта» — не причина, а неверный вызов:
+    # скрипты лежат в папке скилла, рядом с validate.py, который тем же
+    # ответом отработал (RETRO 58). Такой N/A закрывает ВЕСЬ браузерный
+    # раздел и выглядит в отчёте как «так и надо».
+    env_ok = r'playwright|код\s*2|blocked|заблокирован|не установлен|среда'
+    fake = []
+    for ln in rep.splitlines():
+        if not re.search(r'\bB[1-6]\b', ln):
+            continue
+        if not re.search(r'N/?A|Н/?Д', ln, re.I):
+            continue
+        if not re.search(env_ok, ln, re.I):
+            fake.append(re.sub(r'\s+', ' ', ln.strip())[:80])
+    add('Z6b', not fake, 'N/A в разделе B объяснён причиной из среды',
+        bad='браузерная проверка отмечена N/A без причины из среды: «'
+            + '»; «'.join(fake[:2]) + '» — единственная законная причина это '
+              'код 2 от `node <папка-скилла>/smoke.mjs --env` (нет playwright '
+              'или запуск заблокирован). Нет файла рядом с чартом — значит '
+              'запускать надо из папки скилла, а не ставить N/A (RETRO 58)')
+
+
+def selftest():
+    """--selftest: проверка самого валидатора по фикстурам с ИЗВЕСТНЫМ вердиктом.
+
+    Ложный FAIL дороже пропущенного бага: агент верит проверке и идёт править
+    ЗДОРОВЫЙ код — так из чарта уехал защитный try/catch, а половина сессии
+    ушла на перестановку кавычек (RETRO 60). Ловится это только фикстурой,
+    где заранее известно, что валидатор ОБЯЗАН промолчать.
+
+    K1 не в счёт: фикстуры лежат кучей, а не проектными папками.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    fx = os.path.join(here, 'fixtures')
+    exp_path = os.path.join(fx, 'EXPECT.validate.json')
+    if not os.path.isfile(exp_path):
+        print('Нет ' + exp_path)
+        return 2
+    import json
+    expect = json.load(open(exp_path, encoding='utf-8'))
+    print('Самопроверка validate.py по фикстурам:')
+    bad = 0
+    for name in sorted(k for k in expect if not k.startswith('_')):
+        want = sorted(expect[name]['fail'])
+        p = subprocess.run([sys.executable, os.path.abspath(__file__),
+                            os.path.join(fx, name), '--quiet'],
+                           capture_output=True, text=True)
+        got = sorted(set(re.findall(r'^\s*X\s+(\S+)\s+FAIL', p.stdout, re.M)) - {'K1'})
+        ok = got == want
+        bad += 0 if ok else 1
+        print((' v  ' if ok else ' X  ') + name.ljust(24)
+              + 'ждали FAIL [' + (', '.join(want) or '—')
+              + '], получили [' + (', '.join(got) or '—') + ']')
+        if not ok and expect[name].get('note'):
+            print('      ' + expect[name]['note'])
+    print('Итог: ' + ('валидатор судит фикстуры верно (код 0).' if not bad
+                      else 'расхождений: ' + str(bad) + ' (код 1).'))
+    return 1 if bad else 0
+
 
 def main():
     args = [a for a in sys.argv[1:]]
     flags = set(a for a in args if a.startswith('--'))
     paths = [a for a in args if not a.startswith('--')]
-    unknown = flags - {'--template', '--quiet'}
+    unknown = flags - {'--template', '--quiet', '--selftest'}
     if unknown:
         print('Неизвестный флаг: ' + ', '.join(sorted(unknown)))
         return 2
+    if '--selftest' in flags:
+        return selftest()
     if not paths:
         print(__doc__)
         return 2
@@ -536,22 +675,29 @@ def main():
     # ══ C6. Ошибка видна ══
     add('C6', 'try' in bare and 'catch' in bare, 'try/catch вокруг монтажа',
         bad='нет try/catch — любой сбой даст пустой виджет')
-    catch_body = None
-    mc = re.search(r'catch\s*\([^)]*\)\s*', bare)
-    if mc:
+    # Смотрим на ВСЕ catch, а не на первый попавшийся: свой try/catch вокруг
+    # JSON.parse в обработчике стоит в файле раньше монтажного, и проверка «по
+    # первому» роняла правильный код. Агент честно шёл чинить чарт и УДАЛЯЛ
+    # защитный catch, чтобы позеленело (RETRO 60). Достаточно, чтобы хотя бы
+    # один catch показывал ошибку в overlay и не трогал option.
+    catches = []
+    for mc in re.finditer(r'catch\s*\([^)]*\)\s*', bare):
         br3 = bare.find('{', mc.end())
-        if br3 != -1:
-            end3 = match_braces(bare, br3)
-            if end3 != -1:
-                catch_body = code[br3 + 1:end3]
-    if catch_body is None:
+        if br3 == -1:
+            continue
+        end3 = match_braces(bare, br3)
+        if end3 == -1:
+            continue
+        catches.append(bare[br3 + 1:end3])
+    if not catches:
         add('C6b', False, '', bad='не найден блок catch — ошибка монтажа будет молчаливой')
     else:
-        bare_catch = bare[br3 + 1:end3]
-        ok = ('option' not in bare_catch
-              and ('innerHTML' in bare_catch or 'textContent' in bare_catch))
+        ok = any('option' not in c and ('innerHTML' in c or 'textContent' in c)
+                 for c in catches)
         add('C6b', ok, 'catch выводит ошибку в overlay',
-            bad='catch молчит или обращается к option до БЛОКА 7 (RETRO 16, 24)')
+            bad='ни один catch не показывает ошибку в overlay (или обращается '
+                'к option до БЛОКА 7) — сбой монтажа останется молчаливым '
+                '(RETRO 16, 24)')
 
     # ══ S9/S14-S17. Вызов render, префикс, слушатели, координаты тултипа ══
     render_body = find_function(code, bare, 'render')
@@ -637,17 +783,23 @@ def main():
                 + ', но никто их не присваивает — интерактив не включится (RETRO 46)')
 
     # ══ S5. Префикс селекторов в buildCSS ══
-    css_body = find_function(code, bare, 'buildCSS')
+    css_span = find_span(code, bare, 'buildCSS')
+    css_body = None if css_span is None else code[css_span[0]:css_span[1]]
     if css_body is None:
         add('S5', is_tpl, 'buildCSS() не найдена', warn=is_tpl,
             bad='buildCSS() не найдена — стили макета не перенесены')
     else:
         bad_sel = []
-        # Строковые куски с CSS: и одинарные, и двойные кавычки.
-        for m in re.finditer(r"""(\+\s*)?(P|CFG\.ns)?\s*(\+\s*)?(['"])((?:\\.|(?!\4)[^\\])*\{(?:\\.|(?!\4)[^\\])*)\4""",
-                             css_body, re.S):
-            prefixed = bool(m.group(2) and m.group(3))
-            chunk = m.group(5)
+        # Строковые куски с CSS берём у ЛЕКСЕРА, а не регуляркой по коду:
+        # регулярка на файле, где рядом лежат '...' и "...", склеивала два
+        # разных литерала и выдавала код между ними за «голые селекторы»
+        # (RETRO 60). Кавычки в буквальных строках CSS больше не важны.
+        for (a, b, _q) in string_spans(code, bare, css_span[0], css_span[1]):
+            chunk = code[a + 1:b]
+            if '{' not in chunk:
+                continue
+            head = code[max(css_span[0], a - 48):a]
+            prefixed = bool(re.search(r'(?:\bP|CFG\.ns)\s*\+\s*$', head))
             for i2, sel in enumerate(re.findall(r'([^{};]+)\{', chunk)):
                 s = sel.strip()
                 if not s or s.startswith('@') or s.startswith('<'):
@@ -832,6 +984,20 @@ def main():
                   'ровно эти имена и интерактив не найдёт: проверки тултипа уйдут '
                   'в N/A вместо FAIL (RETRO 56)')
 
+    # ══ T7b. Имя атрибута, СОБРАННОЕ из CFG.ns ══
+    # `' + CFG.ns + '-data-tip="..."` выглядит в исходнике как data-tip и даже
+    # проходит T7, а в DOM приезжает `pvt-data-tip`. Виджет при этом работает:
+    # свой же onOver читает то же имя — поэтому баг незаметен до сдачи, где
+    # ВЕСЬ тултиповый слой уходит в N/A и его не проверяет никто (RETRO 59).
+    ns_attr = sorted(set(
+        m.group(1) for m in re.finditer(
+            r"""(?:CFG\.ns|\bP)\s*\+\s*['"]-(data-(?:tip|kind|action|view)[\w-]*)""", code)))
+    add('T7b', not ns_attr, 'имена триггерных атрибутов не склеены с CFG.ns',
+        bad='атрибут собран из CFG.ns: в DOM приедет "<ns>-' + (ns_attr[0] if ns_attr else '')
+            + '" вместо "' + (ns_attr[0] if ns_attr else '') + '" — smoke.mjs ищет имя '
+              'ЦЕЛИКОМ, тултипы и вкладки уйдут в N/A (RETRO 59). Префикс CFG.ns '
+              'нужен КЛАССАМ, а не data-атрибутам')
+
     # ══ S8. Скрытие не через hidden ══
     hid = [i for i, l in enumerate(code_lines, 1) if re.search(r'\.hidden\s*=', l)]
     add('S8', not hid, 'скрытие через style',
@@ -988,6 +1154,22 @@ def main():
         todo = [i for i, l in enumerate(lines, 1) if '[ЗАПОЛНИ]' in l or '[ЗАМЕНИ]' in l]
         add('M4b', not todo, 'нет незакрытых TODO',
             bad='остались плейсхолдеры → строки ' + ','.join(map(str, todo[:6])))
+
+        # ══ H3. Тихое упрощение ══
+        # «Группировка не реализована для простоты — все бары подряд»: элемент
+        # макета выброшен, решение оформлено комментарием в коде, пользователь
+        # узнаёт об этом, глядя на картинку. Урезание объёма — это ВОПРОС,
+        # а не заметка на полях (RETRO 61).
+        cut = []
+        for c in comments_of(raw, code):
+            low = c.lower()
+            if re.search(r'не реализован|для простоты|упрощ[её]н|пока (?:не|что)'
+                         r'|временно|заглушк|todo|fixme|в этой версии', low):
+                cut.append(c.strip()[:60])
+        add('H4', not cut, 'нет упрощений, спрятанных в комментарий',
+            bad='код признаётся, что делает не то, что в макете: «' + '», «'.join(cut[:2])
+                + '» — либо реализуй, либо СПРОСИ пользователя и запиши ответ '
+                  'в NOTES §4; комментарий в коде решением не является (RETRO 61)')
         # ══ Z/F. Полнота чтения макета и формат сдачи ══
         check_notes(path)
         check_fields(path)
