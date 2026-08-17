@@ -33,7 +33,7 @@ REGISTRIES = [('PATTERNS.md', 'каркас и overlay'), ('TABLES.md', 'таб�
 # ('S14b', 'T5', 'EV3'), а не по форме вызова: часть проверок объявлена
 # списком кортежей, а не прямым add(), и по вызову они не находятся.
 CHECK_ID = r"'([A-Z]{1,2}\d+[a-z]?)'"
-CHECKERS = [('validate.py', CHECK_ID), ('smoke.mjs', CHECK_ID)]
+CHECKERS = [('validate.py', CHECK_ID), ('smoke.mjs', CHECK_ID), ('check.py', CHECK_ID)]
 
 # RETRO, которые машиной не проверяются в принципе: они про процесс, диалог
 # с пользователем и смысл данных. Помечаем явно, чтобы «непокрытые» не были

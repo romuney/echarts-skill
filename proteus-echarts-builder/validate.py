@@ -10,9 +10,13 @@ validate.py — механическая проверка <name>.chart.js на �
     python3 validate.py <path>.chart.js
     python3 validate.py <path>.chart.js --template   # режим пустой болванки
     python3 validate.py <path>.chart.js --quiet      # только FAIL/WARN + итог
+    python3 validate.py <path>.chart.js --accept 'T3=почему это ложная тревога'
 
 Порядок аргументов любой. КОД ВОЗВРАТА: 0 — все PASS/WARN, 1 — есть FAIL,
 2 — ошибка запуска (нет файла, не указан путь).
+
+--accept — это ОСПАРИВАНИЕ проверки, а не способ закрыть сдачу. Правила и когда
+им пользоваться — в SKILL.md, раздел «ОСПАРИВАНИЕ ПРОВЕРКИ».
 """
 
 import os
@@ -21,12 +25,19 @@ import sys
 import subprocess
 
 BLOCKS = 7
-R = []   # (id, status, msg)
+R = []        # (id, status, msg)
+ACCEPTED = {}  # cid -> причина, по которой FAIL оспорен агентом
 
 
 def add(cid, ok, msg, warn=False, bad=None):
     st = 'WARN' if (warn and not ok) else ('PASS' if ok else 'FAIL')
     text = msg if ok else (bad if bad is not None else msg)
+    # Оспоренный FAIL не молчит и не зеленеет: он остаётся видимой строкой
+    # в отчёте вместе с причиной — иначе оспаривание становится способом
+    # закрыть сдачу вместо способа сообщить о ложной тревоге (RETRO 66).
+    if st == 'FAIL' and cid in ACCEPTED:
+        st = 'ОСПОР'
+        text = text + '  ||  ОСПОРЕНО: ' + ACCEPTED[cid]
     R.append((cid, st, text))
 
 
@@ -165,6 +176,24 @@ def match_braces(bare, start):
     return -1
 
 
+def match_parens(bare, start):
+    """От индекса открывающей '(' в bare вернуть индекс парной ')' или -1."""
+    depth = 0
+    for i in range(start, len(bare)):
+        if bare[i] == '(':
+            depth += 1
+        elif bare[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
+
+
+def flat(txt):
+    """Тело функции без пробелов — для сравнения «то же самое или переписано»."""
+    return re.sub(r'\s+', '', txt or '')
+
+
 _FN_FORMS = [
     r'function\s+{n}\s*\(',
     r'var\s+{n}\s*=\s*function\s*\w*\s*\(',
@@ -194,6 +223,75 @@ def find_function(code, bare, name):
     return None if sp is None else code[sp[0]:sp[1]]
 
 
+VAL = '\x01'   # место значения, склеенного из выражения: CFG.colors.bg и т.п.
+
+
+def css_text(code, bare, span, ns):
+    """CSS из buildCSS() СКЛЕЕННЫЙ — таким, каким он приедет в <style>.
+
+    Одно и то же правило пишут двумя равноправными способами:
+
+        var P = '.' + CFG.ns;         s += P + '-tip{font-family:...}'
+        var P = '.' + CFG.ns + '-';   s += P + 'tip{font-family:...}'
+
+    Проверка, которая ищет в ИСХОДНИКЕ литерал '-tip{', вторую форму не находит
+    и говорит «тултип без своего font-family» — при том что font-family стоит
+    ровно там, куда показывает сообщение. Чинить нечего, указано не туда,
+    и «лечением» становится дублирующее мёртвое правило: в Test7 на это ушло
+    четыре итерации, а в файл уехала лишняя строка CSS (RETRO 63).
+
+    Поэтому строки сначала склеиваются: `P` и `CFG.ns` подставляются реально,
+    значения-выражения становятся VAL, границы инструкций — переводом строки.
+    Дальше проверки читают ГОТОВЫЙ CSS и не зависят от того, где в конкатенации
+    стоял дефис.
+    """
+    if span is None:
+        return ''
+    a0, b0 = span
+    body = code[a0:b0]
+
+    pfx = '.' + ns
+    mp = re.search(r"\bP\s*=\s*(['\"])\.\1\s*\+\s*CFG\.ns\s*(\+\s*(['\"])-\3)?", body)
+    if mp:
+        pfx = '.' + ns + ('-' if mp.group(2) else '')
+    elif re.search(r"\bP\s*=\s*CFG\.ns\s*\+\s*(['\"])-\1", body):
+        pfx = ns + '-'
+
+    def head_token(g):
+        """Что стоит слева от '+', открывающего новую склейку."""
+        m = re.search(r'([\w.$]+)\s*\+\s*$', g)
+        h = m.group(1) if m else ''
+        return pfx if h == 'P' else (ns if h == 'CFG.ns' else '')
+
+    out, prev = [], a0
+    for (i, j, _q) in string_spans(code, bare, a0, b0):
+        g = code[prev:i].strip()
+        if g == '' or re.fullmatch(r'\++', g):
+            pass                                   # чистая склейка строк
+        elif g.startswith('+') and g.endswith('+'):
+            inner = g[1:-1].strip()                # значение внутри склейки
+            out.append(pfx if inner == 'P'
+                       else ns if inner == 'CFG.ns' else VAL)
+        else:
+            # Инструкция кончилась: правила не должны слипаться в одно.
+            out.append('\n' + head_token(g))
+        out.append(code[i + 1:j])
+        prev = j + 1
+    return ''.join(out)
+
+
+def css_rules(flat_css):
+    """[(селектор, тело правила)] из склеенного CSS. @-правила и <style> мимо."""
+    out = []
+    for line in flat_css.splitlines():
+        for m in re.finditer(r'([^{};]+)\{([^{}]*)\}?', line):
+            sel = m.group(1).strip()
+            if not sel or sel.startswith('@') or sel.startswith('<'):
+                continue
+            out.append((sel, m.group(2)))
+    return out
+
+
 def notes_section(txt, num):
     m = re.search(r'^##\s*§' + str(num) + r'\b.*?$(.*?)(?=^##\s*§|\Z)', txt, re.M | re.S)
     return m.group(1) if m else ''
@@ -209,6 +307,18 @@ KIT = [
     ('FIELDS.md', 'TEMPLATE.FIELDS.md'),
 ]
 KIT_CHART = 'TEMPLATE.chart.js'
+
+# Служебные функции: копируются из шаблона ДОСЛОВНО (SKILL.md, правило 7).
+# Делятся надвое по цене ошибки.
+#
+# CORE — чистые хелперы БЛОКА 2. Ни окружения, ни состояния, ни DOM: переписать
+# их нельзя даже случайно, только заново сочинив. Расхождение здесь означает,
+# что блок писался с нуля, а не заполнялся, — и тогда вместе с ним уезжают
+# инварианты, которых по коду вокруг не видно (epoch-мс против epoch-с).
+CORE_FNS = ('esc', 'num', 'toDate')
+# TIP — машинерия тултипа из БЛОКА 6. Её могло не быть в задаче вовсе, поэтому
+# WARN: сигнал важен, но приговором быть не может.
+TIP_FNS = ('getTip', 'showTip', 'hideTip', 'trigger', 'onOut')
 
 
 def _norm(txt):
@@ -285,6 +395,74 @@ def check_kit(path, is_tpl):
             + ' — болванка написана по памяти, инварианты каркаса потеряны'
             + ' (RETRO 51). Возьми файл из templates/ как есть; если он уже'
             + ' заполняется — гоняй validate.py БЕЗ --template')
+
+
+def check_service(code, bare):
+    """K3/K3b: служебный каркас ЗАПОЛНЕН по шаблону, а не написан заново.
+
+    Реальный случай (RETRO 63), Test7. `bootstrap.py` отработал и положил
+    копию `TEMPLATE.chart.js`. Шапка файла осталась шаблонной — вплоть до
+    строки «var P = '.' + CFG.ns в buildHTML», — а БЛОКИ 2, 5, 6, 7 переписаны
+    заново своими словами: `showTip(x, y, html)` вместо `showTip(html, rect)`
+    (клампинг по окну потерян), свой `toDate` без разбора epoch-мс (RETRO 10
+    вернулся), `state` не в неймспейсе `CFG.ns`, поиск хоста по выдуманному
+    `[data-key^="_echarts_instance_"]`.
+
+    Дальше всё пошло по кругу: первый прогон дал 10 FAIL, и ВСЕ ДЕСЯТЬ — это
+    машинерия, которая в шаблоне уже была и работала. Свежая болванка проходит
+    валидатор целиком (52/52), а сессия потратила шесть циклов исправлений
+    на возврат к тому, что ей выдали на ШАГЕ 1.
+
+    Отличить это от честной сборки нельзя ни по одной проверке симптомов:
+    K2 сверяет с шаблоном только болванку и выключается ровно тогда, когда
+    файл начинают заполнять. Поэтому здесь сверяются ТОЛЬКО те функции,
+    которые шаблон отдаёт готовыми, без [ЗАПОЛНИ] внутри.
+    """
+    tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', KIT_CHART)
+    if not os.path.isfile(tpl):
+        return
+    try:
+        traw = open(tpl, encoding='utf-8').read()
+    except OSError:
+        return
+    tcode, tbare = scan(traw)
+
+    def diff(names):
+        changed, lost = [], []
+        for nm in names:
+            want = find_function(tcode, tbare, nm)
+            if want is None or '[ЗАПОЛНИ]' in want:
+                continue      # это место шаблон оставил под заполнение
+            got = find_function(code, bare, nm)
+            if got is None:
+                lost.append(nm)
+            elif flat(got) != flat(want):
+                changed.append(nm)
+        return changed, lost
+
+    core_changed, core_lost = diff(CORE_FNS)
+    add('K3', not core_changed and not core_lost,
+        'чистые хелперы БЛОКА 2 — из шаблона',
+        bad='БЛОК 2 написан заново, а не заполнен: '
+            + ', '.join(sorted(x + '()' for x in core_changed + core_lost))
+            + (' — переписан' if core_changed else ' — потерян')
+            + ' (RETRO 63). Это хелперы без окружения и состояния: случайно они'
+              ' не расходятся, значит блок сочинялся с нуля. Вместе с ними'
+              ' уезжают инварианты, которых по коду вокруг не видно: у toDate()'
+              ' это разбор epoch-мс против epoch-с (RETRO 10), у esc() —'
+              ' экранирование кавычки. Возьми тела из templates/' + KIT_CHART
+            + ' как есть. И перечитай, что ещё в файле писалось заново:'
+              ' FAIL ниже, скорее всего, следствия — чинить их по одному значит'
+              ' переизобретать шаблон под диктовку валидатора')
+
+    tip_changed, tip_lost = diff(TIP_FNS)
+    if tip_changed:
+        add('K3b', False, '', warn=True,
+            bad='машинерия тултипа переписана: '
+                + ', '.join(x + '()' for x in tip_changed)
+                + ' — в шаблонных телах заперты клампинг по окну (RETRO 26)'
+                  ' и снятие ОБОИХ скрывающих свойств (RETRO 44). Если тултип'
+                  ' в задаче есть — верни тела из templates/' + KIT_CHART)
 
 
 def check_notes(path):
@@ -538,8 +716,41 @@ def selftest():
     return 1 if bad else 0
 
 
+def parse_accept(args):
+    """--accept КОД=причина — разобрать и в форме '--accept X=y', и '--accept=X=y'.
+
+    Причина обязательна и не короче 12 символов: «ложное» или «ок» это не
+    оспаривание, а способ закрыть сдачу. Такой --accept игнорируется молча
+    для проверки, но громко для агента — строка ниже печатается всегда.
+    """
+    out, rest, i = {}, [], 0
+    while i < len(args):
+        a = args[i]
+        val = None
+        if a == '--accept':
+            i += 1
+            val = args[i] if i < len(args) else ''
+        elif a.startswith('--accept='):
+            val = a[len('--accept='):]
+        else:
+            rest.append(a)
+            i += 1
+            continue
+        cid, _, why = (val or '').partition('=')
+        cid, why = cid.strip(), why.strip()
+        if not cid or len(why) < 12:
+            print('--accept ' + (val or '') + ' — нужна форма КОД=причина,'
+                  ' и причина словами, не короче 12 символов. Оспаривание'
+                  ' не применено.')
+        else:
+            out[cid] = why
+        i += 1
+    return out, rest
+
+
 def main():
-    args = [a for a in sys.argv[1:]]
+    acc, args = parse_accept(sys.argv[1:])
+    ACCEPTED.update(acc)
     flags = set(a for a in args if a.startswith('--'))
     paths = [a for a in args if not a.startswith('--')]
     unknown = flags - {'--template', '--quiet', '--selftest'}
@@ -567,6 +778,8 @@ def main():
     assert len(code) == len(raw) == len(bare), 'проекции разъехались с оригиналом'
     lines = raw.splitlines()
     code_lines = code.splitlines()
+    mns = re.search(r"\bns\s*:\s*['\"]([\w-]+)['\"]", code)
+    ns = mns.group(1) if mns else 'pvt'
 
     # ══ P5. Синтаксис ══
     try:
@@ -783,67 +996,56 @@ def main():
                 + ', но никто их не присваивает — интерактив не включится (RETRO 46)')
 
     # ══ S5. Префикс селекторов в buildCSS ══
+    # Всё, что ниже, читает СКЛЕЕННЫЙ CSS (css_text): проверка не должна
+    # зависеть от того, на каком куске конкатенации стоит дефис (RETRO 63).
     css_span = find_span(code, bare, 'buildCSS')
     css_body = None if css_span is None else code[css_span[0]:css_span[1]]
+    flat_css = css_text(code, bare, css_span, ns)
+    rules = css_rules(flat_css)
     if css_body is None:
         add('S5', is_tpl, 'buildCSS() не найдена', warn=is_tpl,
             bad='buildCSS() не найдена — стили макета не перенесены')
     else:
-        bad_sel = []
-        # Строковые куски с CSS берём у ЛЕКСЕРА, а не регуляркой по коду:
-        # регулярка на файле, где рядом лежат '...' и "...", склеивала два
-        # разных литерала и выдавала код между ними за «голые селекторы»
-        # (RETRO 60). Кавычки в буквальных строках CSS больше не важны.
-        for (a, b, _q) in string_spans(code, bare, css_span[0], css_span[1]):
-            chunk = code[a + 1:b]
-            if '{' not in chunk:
-                continue
-            head = code[max(css_span[0], a - 48):a]
-            prefixed = bool(re.search(r'(?:\bP|CFG\.ns)\s*\+\s*$', head))
-            for i2, sel in enumerate(re.findall(r'([^{};]+)\{', chunk)):
-                s = sel.strip()
-                if not s or s.startswith('@') or s.startswith('<'):
-                    continue
-                if i2 == 0 and prefixed and re.match(r'^[-_a-z0-9]', s):
-                    continue
-                if not re.match(r'^[.#]', s):
-                    bad_sel.append(s[:40])
+        bad_sel = [sel[:40] for sel, _ in rules if not re.match(r'^[.#]', sel)]
         has_prefix_var = bool(re.search(r"=\s*['\"]\.['\"]\s*\+\s*CFG\.ns", css_body)) \
             or bool(re.search(r"CFG\.ns\s*\+\s*['\"]-", css_body))
         add('S5', not bad_sel and has_prefix_var,
             'все селекторы префиксованы',
-            bad=('голые селекторы: ' + ', '.join(bad_sel[:5]) if bad_sel
+            bad=('голые селекторы: ' + ', '.join(bad_sel[:5])
+                 + ' — правило без префикса утечёт в интерфейс Proteus. Холст '
+                   'eCharts прячется из JS (host.querySelector(\'canvas\')), '
+                   'а не правилом canvas{display:none} (RETRO 5, 63)' if bad_sel
                  else 'нет префикса через CFG.ns — стили утекут в дашборд (RETRO 5)'))
 
         # ── S5b. Префикс вписан руками вместо P ──
         # '.chart-row' в строке CSS работает ровно до тех пор, пока CFG.ns
         # равен 'chart'. Такие правила молча отваливаются при смене ns и
         # обычно появляются при копипасте макета кусками.
-        mns = re.search(r"\bns\s*:\s*['\"]([\w-]+)['\"]", code)
-        if mns:
-            lit = '.' + mns.group(1) + '-'
-            n_hard = css_body.count(lit)
-            add('S5b', n_hard == 0, 'префикс в buildCSS только через P/CFG.ns', warn=True,
-                bad='(RETRO 47) литерал "' + lit + '" вписан в CSS ' + str(n_hard)
-                    + ' раз вместо P — смена CFG.ns сломает эти правила')
+        # Смотрим на ИСХОДНИК, а не на склейку: в склейке префикс есть везде.
+        lit = '.' + ns + '-'
+        n_hard = css_body.count(lit)
+        add('S5b', n_hard == 0, 'префикс в buildCSS только через P/CFG.ns', warn=True,
+            bad='(RETRO 47) литерал "' + lit + '" вписан в CSS ' + str(n_hard)
+                + ' раз вместо P — смена CFG.ns сломает эти правила')
 
         # ── S19. Корень резиновый ──
         # Макет — отдельная страница со своей рамкой: фикс-ширина, центрирование.
         # Перенесённая на корень, рамка замораживает виджет: ячейка дашборда
         # растёт, а график — нет. Фикс-размеры допустимы только у внутренних
         # элементов; min-width на корне не мешает тянуться и не считается.
-        mroot = re.search(r'-root\{', css_body)
-        if mroot is not None:
-            seg = css_body[mroot.end():mroot.end() + 800]
-            cut = seg.find('}')
-            rule = re.sub(r"['\"+\s]", '', seg if cut == -1 else seg[:cut])
+        root_rule = ''
+        for sel, body in rules:
+            if re.search(r'-root\s*$', sel) or re.search(r'-root[.:\s]', sel + ' '):
+                root_rule = body.replace(' ', '')
+                break
+        if root_rule:
             fixed = [m.group(0) for m in
-                     re.finditer(r'(?<![a-z-])(?:max-)?width:\d+(?:\.\d+)?px', rule)]
+                     re.finditer(r'(?<![a-z-])(?:max-)?width:\d+(?:\.\d+)?px', root_rule)]
             add('S19', not fixed, 'корень резиновый, без фиксированной ширины',
                 bad='(RETRO 48) у .<ns>-root фиксированная ширина: '
                     + ', '.join(fixed[:3]) + ' — виджет не растянется за ячейкой '
                     'дашборда. Рамка макета не переносится: корень width:100%')
-            if not fixed and 'width:100%' not in rule:
+            if not fixed and 'width:100%' not in root_rule:
                 add('S19b', False, '', warn=True,
                     bad='(RETRO 48) в правиле .<ns>-root нет width:100% — сверь '
                         'с шаблоном: корень обязан тянуться за хостом')
@@ -852,11 +1054,10 @@ def main():
         # @media (max-width) меряет ОКНО, а виджет живёт в ячейке дашборда:
         # окно 1920px, ячейка 400px — «узкая» ветка не включится никогда.
         # Для тултипа в body оконная ширина законна — тогда объясни WARN строкой.
-        medias = [line_of(css_body, m.start()) for m in
-                  re.finditer(r'@media[^{\'"]*\(\s*(?:max|min)-width', css_body)]
+        medias = re.findall(r'@media[^{]*\(\s*(?:max|min)-width', flat_css)
         if medias:
             add('S20', False, '', warn=True,
-                bad='(RETRO 49) @media по ширине ОКНА в buildCSS (строк: '
+                bad='(RETRO 49) @media по ширине ОКНА в buildCSS (правил: '
                     + str(len(medias)) + ') — в ячейке дашборда не сработает. '
                     'Брейкпоинт делается классом на корне по ширине хоста '
                     '(RECIPES.md, «Рамка макета ≠ рамка виджета»)')
@@ -874,6 +1075,61 @@ def main():
         add('S6', not missing or is_tpl,
             'все классы со стилями', warn=is_tpl,
             bad='классы без CSS: ' + ', '.join(missing[:6]) + ' (RETRO 6)')
+
+        # ── S6b. Класс СКЛЕЕН из CFG.ns, а правила под него нет ──
+        # S6 читает только литерал внутри class="…", а в этом каркасе классы
+        # почти всегда собираются конкатенацией — и она для S6 невидима.
+        # Реальный случай (RETRO 64), Test7: разметка ставит панели
+        # `CFG.ns + '-active'`, то есть class="pvt-pyr-view pvt-active",
+        # а CSS показывает панель правилом `P + 'pyr-view.active'` — по классу
+        # БЕЗ префикса. До первого клика ни одна из пяти пирамид не видна:
+        # правая половина виджета пустая. Ни синтаксис, ни S6, ни браузерные
+        # проверки этого не заметили — smoke кликает вкладки и меряет ПОСЛЕ
+        # клика, когда обработчик уже дописал класс руками.
+        # Ищем по ВСЕЙ разметке, а не внутри class="…": модификатор часто
+        # приезжает переменной (var tActive = ' ' + CFG.ns + '-active'), и
+        # разбор одного атрибута его не увидит — а это ровно случай Test7.
+        # Имена АТРИБУТОВ сюда не относятся: их разбирает T7b.
+        # Префикс в разметке зовут и CFG.ns, и P (var P = CFG.ns — без точки,
+        # точка только в buildCSS, см. S15). Обе формы — один и тот же класс.
+        pref_re = r"CFG\.ns"
+        if re.search(r"\bP\s*=\s*CFG\.ns\b(?!\s*\+\s*['\"]\.)", html_body):
+            pref_re = r"(?:CFG\.ns|\bP)"
+        used_ns = set(m.group(1) for m in re.finditer(
+            pref_re + r"\s*\+\s*['\"]-([a-z0-9][\w-]*)", html_body))
+        used_ns = set(c for c in used_ns
+                      if not c.startswith(('data-', 'aria-', 'role')))
+        known = set(re.findall(r'\.' + re.escape(ns) + r'-([a-z0-9][\w-]*)',
+                               flat_css, re.I))
+        # Рассогласование доказуемо, когда правило под этот класс ЕСТЬ,
+        # но без префикса: значит одна половина писалась через CFG.ns,
+        # а вторая — руками, и в DOM они не встретятся.
+        mismatch = sorted(c for c in used_ns - known
+                          if re.search(r'\.' + re.escape(c) + r'(?![\w-])', flat_css))
+        add('S6b', not mismatch or is_tpl, 'префикс класса в разметке и в CSS совпадает',
+            warn=is_tpl,
+            bad='разметка ставит .' + ns + '-' + (', .' + ns + '-').join(mismatch[:5])
+                + ', а правило в buildCSS написано БЕЗ префикса: .'
+                + '  .'.join(mismatch[:5]) + '. В DOM эти два класса не встретятся'
+                + ' никогда (RETRO 64). Именно так в Test7 пропала правая половина'
+                + ' виджета: разметка ставила class="' + ns + '-pyr-view ' + ns
+                + '-active", а показывало панель правило .' + ns
+                + '-pyr-view.active — до первого клика не была видна ни одна'
+                + ' пирамида, и ни одна проверка этого не заметила, потому что'
+                + ' браузерные меряют экран ПОСЛЕ клика, когда класс дописал'
+                + ' обработчик. Выбери одну сторону: либо оба с префиксом,'
+                + ' либо оба без')
+
+        # Класс без правила ВООБЩЕ — может быть просто зацепкой для
+        # querySelector, поэтому WARN, а не приговор.
+        orphan = sorted(c for c in used_ns - known
+                        if not re.search(r'\.' + re.escape(c) + r'(?![\w-])', flat_css))
+        if orphan and not is_tpl:
+            add('S6c', False, '', warn=True,
+                bad='классы разметки без единого правила: .' + ns + '-'
+                    + (', .' + ns + '-').join(orphan[:5])
+                    + ' — если это зацепка для querySelector, так и должно быть;'
+                      ' если элемент ждал стилей макета, они не перенесены (RETRO 6)')
 
     # ══ S7/T1-T5. Тултип ══
     if has_tip:
@@ -896,14 +1152,24 @@ def main():
                 'тултип не пересоздаётся в render()',
                 bad='render() создаёт узлы заново — тултип будет моргать (RETRO 19)')
     if css_body is not None:
-        n_ff = len(re.findall(r'font-family', css_body))
-        tip_rule = re.search(r'-tip\{', css_body)
-        tip_has_ff = bool(tip_rule and 'font-family'
-                          in css_body[tip_rule.start():tip_rule.start() + 400])
+        n_ff = len(re.findall(r'font-family', flat_css))
+        # Правило тултипа ищем в СКЛЕЕННОМ CSS: в исходнике оно выглядит и как
+        # P + '-tip{', и как P + 'tip{' — от этого зависело только сообщение
+        # «тултип без font-family», выданное на код, где font-family есть
+        # (RETRO 63).
+        tip_body_css = ''
+        for sel, rbody in rules:
+            if re.search(r'-tip\s*$', sel) or re.search(r'-tip[.:\s,]', sel + ' '):
+                tip_body_css = rbody
+                break
         if has_tip:
-            add('T3', n_ff >= 2 and tip_has_ff, 'font-family задан и в root, и в тултипе',
-                bad='тултип без своего font-family — будет другой шрифт (RETRO 21)')
-        add('T4', 'font-family:inherit' in css_body.replace(' ', ''),
+            add('T3', n_ff >= 2 and 'font-family' in tip_body_css,
+                'font-family задан и в root, и в тултипе',
+                bad='тултип без своего font-family — будет другой шрифт (RETRO 21). '
+                    'Ищется правило .' + ns + '-tip в СКЛЕЕННОМ CSS, так что форма '
+                    'записи префикса тут ни при чём: проверь, что font-family '
+                    'стоит именно в правиле тултипа, а не только у корня')
+        add('T4', 'font-family:inherit' in flat_css.replace(' ', ''),
             'font-family:inherit для дочерних', warn=True,
             bad='нет font-family:inherit — button/input возьмут системный шрифт (RETRO 21)')
 
@@ -913,12 +1179,7 @@ def main():
     # честно строится, позиционируется и наполняется текстом, но остаётся
     # невидимым: ни ошибки, ни пустого экрана, ни зацепки в отладке (RETRO 44).
     if has_tip and css_body is not None:
-        mtip = re.search(r'-tip\{', css_body)
-        rule = ''
-        if mtip:
-            seg = css_body[mtip.end():mtip.end() + 800]
-            cut = seg.find('}')
-            rule = (seg if cut == -1 else seg[:cut]).replace(' ', '')
+        rule = tip_body_css.replace(' ', '')
         # ('свойство в CSS', 'что считаем снятием в JS')
         props = [
             ('opacity', r'opacity:0(?![.\d])',
@@ -932,7 +1193,7 @@ def main():
              r'display:(?:block|flex|inline-block|grid)'),
         ]
         unset = []
-        flat_css = css_body.replace(' ', '')
+        tight_css = flat_css.replace(' ', '')
         for name, hide_pat, show_pat, cls_pat in props:
             if not re.search(hide_pat, rule):
                 continue
@@ -940,7 +1201,7 @@ def main():
                 continue
             # класс-переключатель — тоже законный способ показа
             if re.search(r'classList\.(?:add|toggle|remove)\s*\(', code) \
-                    and re.search(cls_pat, flat_css):
+                    and re.search(cls_pat, tight_css):
                 continue
             unset.append(name)
         # ══ T6. hover не пересобирает разметку ══
@@ -998,6 +1259,44 @@ def main():
               'ЦЕЛИКОМ, тултипы и вкладки уйдут в N/A (RETRO 59). Префикс CFG.ns '
               'нужен КЛАССАМ, а не data-атрибутам')
 
+    # ══ S21. Слушатели под флагом, который переживает перезапуск ══
+    # Proteus перезапускает скрипт на КАЖДОЙ перерисовке. Монтаж при этом
+    # создаёт НОВЫЙ overlay, а флаг «слушатели уже навешены» лежит в
+    # window.__pvtState и перезапуск переживает. Итог (RETRO 65, Test7):
+    # после первой же перерисовки новый overlay остаётся вообще без
+    # обработчиков — ни тултипов, ни вкладок, при этом ни одной ошибки
+    # в консоли и полностью правильная картинка. Дублей бояться нечего:
+    # старый overlay удалён вместе со своими слушателями, поэтому в шаблоне
+    # addEventListener стоит безусловно.
+    guarded = []
+    for m in re.finditer(r'\bif\s*\(', bare):
+        op = m.end() - 1
+        cp = match_parens(bare, op)
+        if cp == -1:
+            continue
+        cond = code[op:cp + 1]
+        if not re.search(r'\bstate\b', cond):
+            continue
+        br6 = bare.find('{', cp)
+        if br6 == -1 or bare[cp + 1:br6].strip():
+            continue
+        end6 = match_braces(bare, br6)
+        if end6 == -1:
+            continue
+        for ml in re.finditer(r'(\w+)\s*\.\s*addEventListener', code[br6:end6]):
+            if ml.group(1) not in ('window', 'document'):
+                guarded.append(ml.group(1) + ' (строка '
+                               + str(line_of(raw, br6 + ml.start())) + ')')
+    add('S21', not guarded, 'слушатели overlay навешиваются безусловно',
+        bad='addEventListener на ' + ', '.join(sorted(set(guarded))[:3])
+            + ' стоит под условием из state. Флаг переживает перезапуск скрипта,'
+            ' а overlay пересоздаётся — после первой же перерисовки Proteus'
+            ' новый overlay останется без обработчиков: тултипы и вкладки'
+            ' умрут молча, без ошибок в консоли (RETRO 65). Старый overlay'
+            ' удаляется вместе со слушателями, дублей не будет: вешай'
+            ' безусловно, как в шаблоне. Флаг нужен ТОЛЬКО window/document —'
+            ' они перезапуск переживают')
+
     # ══ S8. Скрытие не через hidden ══
     hid = [i for i, l in enumerate(code_lines, 1) if re.search(r'\.hidden\s*=', l)]
     add('S8', not hid, 'скрытие через style',
@@ -1029,10 +1328,15 @@ def main():
     add('D1c', not cdn, 'нет внешних URL / CDN',
         bad='внешний URL / CDN → строки ' + ','.join(map(str, cdn[:5])))
 
-    # ══ Гигиена: console.log ══
-    cl = [i for i, l in enumerate(code_lines, 1) if 'console.log' in l]
-    add('H1', not cl, 'нет console.log', warn=True,
-        bad='console.log → строки ' + ','.join(map(str, cl[:5])))
+    # ══ Гигиена: console.* ══
+    # Раньше ловился только console.log — и в сданный Test7 уехал
+    # console.error из ветки catch. Для пользователя разницы нет: и то и другое
+    # это отладочный вывод в консоли боевого дашборда. Ошибку монтажа показывает
+    # overlay (C6b), консоль для этого не нужна.
+    cl = [i for i, l in enumerate(code_lines, 1) if re.search(r'\bconsole\s*\.\s*\w', l)]
+    add('H1', not cl, 'нет console.*', warn=True,
+        bad='console.* → строки ' + ','.join(map(str, cl[:5]))
+            + ' — отладочный вывод в боевом файле; ошибку показывает overlay (C6b)')
 
     # ══ H2. Код, написанный ради валидатора ══
     # Проверки описывают ПОВЕДЕНИЕ. Заглушка, поставленная «чтобы позеленело»,
@@ -1146,6 +1450,7 @@ def main():
         check_kit(path, True)
     else:
         check_kit(path, False)
+        check_service(code, bare)
         add('M4', n_fields > 0, 'CFG.fields: ' + str(n_fields) + ' полей',
             bad='CFG.fields задан массивом имён, а шаблон ждёт объект'
                 ' { alias: \'sql_column\' } — по массиву не работают ни автомок'
@@ -1160,11 +1465,24 @@ def main():
         # макета выброшен, решение оформлено комментарием в коде, пользователь
         # узнаёт об этом, глядя на картинку. Урезание объёма — это ВОПРОС,
         # а не заметка на полях (RETRO 61).
+        # Регулярка описывает УРЕЗАНИЕ ОБЪЁМА, а не отдельные слова. Прежняя
+        # ловила «пока не» и «заглушк» где угодно — и роняла сдачу на
+        # `// идём вверх, пока не упрёмся в overlay` и на `// Заглушка при
+        # пустых данных`, то есть на комментарии, описывающем ветку noData,
+        # которую сам скилл и требует (C5). Агент тратил итерацию на
+        # переписывание комментария, а не кода (RETRO 63).
         cut = []
         for c in comments_of(raw, code):
             low = c.lower()
-            if re.search(r'не реализован|для простоты|упрощ[её]н|пока (?:не|что)'
-                         r'|временно|заглушк|todo|fixme|в этой версии', low):
+            if re.search(r'нет данных|пуст|no ?data|данных нет', low):
+                continue      # это про ветку CFG.text.noData, а не про урезание
+            if re.search(r'не реализован|нереализован|для простоты|упрощ[её]н'
+                         r'|в этой версии|\btodo\b|\bfixme\b'
+                         r'|пока (?:что )?(?:не|нет)\s*(?:реализ|сдела|поддерж'
+                         r'|работ|подключ|перенес|считае|учитыва)'
+                         r'|пока только|пока без'
+                         r'|временно\s*(?:не|отключ|убра|захардкож|заглуш)'
+                         r'|заглушк\w*\s+(?:вместо|для|на месте|под)', low):
                 cut.append(c.strip()[:60])
         add('H4', not cut, 'нет упрощений, спрятанных в комментарий',
             bad='код признаётся, что делает не то, что в макете: «' + '», «'.join(cut[:2])
@@ -1179,6 +1497,7 @@ def main():
     w = max(len(c) for c, _, _ in R)
     fails = sum(1 for _, s, _ in R if s == 'FAIL')
     warns = sum(1 for _, s, _ in R if s == 'WARN')
+    disp = sum(1 for _, s, _ in R if s == 'ОСПОР')
     total = len(R)
     print('\n' + path)
     print('-' * 72)
@@ -1187,13 +1506,26 @@ def main():
         if quiet and st == 'PASS':
             continue
         shown += 1
-        mark = {'PASS': 'v', 'FAIL': 'X', 'WARN': '!'}[st]
-        print(' ' + mark + '  ' + cid.ljust(w) + '  ' + st.ljust(4) + '  ' + msg)
+        mark = {'PASS': 'v', 'FAIL': 'X', 'WARN': '!', 'ОСПОР': '?'}[st]
+        print(' ' + mark + '  ' + cid.ljust(w) + '  ' + st.ljust(5) + '  ' + msg)
     if quiet and shown == 0:
         print(' всё чисто')
     print('-' * 72)
-    print('Итог: ' + str(total - fails - warns) + '/' + str(total) + ' PASS, '
-          + str(warns) + ' WARN, ' + str(fails) + ' FAIL')
+    print('Итог: ' + str(total - fails - warns - disp) + '/' + str(total) + ' PASS, '
+          + str(warns) + ' WARN, ' + str(disp) + ' ОСПОР, ' + str(fails) + ' FAIL')
+    # Про чужие коды не ворчим: check.py передаёт --accept обоим чекерам,
+    # и E-коды принадлежат smoke.mjs.
+    unused = sorted(set(k for k in ACCEPTED if not k.startswith('E'))
+                    - set(c for c, s, _ in R if s == 'ОСПОР'))
+    if unused:
+        print('\n--accept на кодах, которые НЕ падали: ' + ', '.join(unused)
+              + ' — проверь ID, оспаривание к ним не применилось.')
+    if disp:
+        print('\nОСПОРЕНО проверок: ' + str(disp) + '. Это не «пройдено»: каждую строку'
+              '\nвыпиши в NOTES §6 и назови пользователю в финальном ответе словами.')
+        if disp > 2:
+            print('Оспорено больше двух проверок разом — так выглядит не серия ложных'
+                  '\nтревог, а подгонка сдачи. Перечитай SKILL.md, «ОСПАРИВАНИЕ ПРОВЕРКИ».')
     if fails:
         print('\nСДАВАТЬ НЕЛЬЗЯ. Исправь FAIL и запусти снова.')
     return 1 if fails else 0

@@ -1,13 +1,14 @@
-// ФИКСТУРА для `node smoke.mjs --selftest`. В Proteus не вставляется.
+// ФИКСТУРА для `--selftest`. В Proteus не вставляется.
 //
-// СЛОМАННОЕ ПЕРЕКЛЮЧЕНИЕ. Отличие от tabs-ok ровно одно: активной панелью
-// в разметке ВСЕГДА остаётся первая, а обработчик показывает нужную снятием
-// одного лишь display — при том что панель спрятана ДВУМЯ свойствами
-// (display:none + opacity:0). Кнопка подсвечивается, экран не меняется.
-//
-// Так выглядит жалоба «переключалка не работает». E7 такой виджет пропускал:
-// разметка после клика ДЕЙСТВИТЕЛЬНО другая (сменился класс active), а экран
-// прежний. Ожидание самопроверки: E15 = FAIL.
+// БАГ ЗАШИТ НАМЕРЕННО (RETRO 65): виджет работает ровно до первой перерисовки
+// дашборда, а потом становится картинкой. Две причины разом, обе из Test7:
+//   1. выбор вкладки живёт в DOM, а не в state: обработчик дописывает класс
+//      руками и render() не зовёт → перезапуск скрипта возвращает первую
+//      вкладку и стирает выбор пользователя (smoke E18);
+//   2. слушатели навешены под флагом state.bound, который перезапуск
+//      ПЕРЕЖИВАЕТ, а overlay пересоздаётся → новый overlay остаётся без
+//      единого обработчика (validate S21, smoke E19).
+// До перезапуска всё зелено: E15/E16 проходят, ошибок в консоли нет.
 
 // ---------- БЛОК 1: CFG ----------
 var CFG = {
@@ -100,8 +101,8 @@ function buildHTML() {
   }
   h.push('</div>');
   for (i = 0; i < VIEWS.length; i++) {
-    h.push('<div class="' + P + '-view' + (VIEWS[i] === 'a' ? ' active' : '')
-      + '" data-view="' + VIEWS[i] + '">');   // БАГ: всегда первая
+    h.push('<div class="' + P + '-view' + (VIEWS[i] === state.view ? ' active' : '')
+      + '" data-view="' + VIEWS[i] + '">');
     h.push('<span data-tip="row:' + VIEWS[i] + '">Экран ' + VIEWS[i].toUpperCase()
       + ': строк ' + fmtInt(MODEL.sum) + ', метрика ' + VIEWS[i] + '</span>');
     h.push('</div>');
@@ -154,10 +155,10 @@ function buildHTML() {
     }
     function renderTip(el) { showTip(esc(getTip(el)), el.getBoundingClientRect()); }
 
-    // Слушатели вешаются БЕЗУСЛОВНО: overlay только что создан заново,
-    // а старый удалён вместе со своими обработчиками. Флаг из state
-    // переживает перезапуск скрипта и оставил бы новый overlay
-    // без единого слушателя (RETRO 65, validate.py S21).
+    // БАГ: флаг лежит в window.__pvtState и переживает перезапуск скрипта,
+    // а overlay при каждом монтаже создаётся заново.
+    if (!state.bound) {
+    state.bound = true;
     overlay.addEventListener('mouseover', function (e) {
       var t = e.target.closest ? e.target.closest('[data-tip]') : null;
       if (t) { renderTip(t); }
@@ -172,12 +173,17 @@ function buildHTML() {
       if (!b) { return; }
       var act = b.getAttribute('data-action').split(':');
       if (act[0] !== 'tab') { return; }   // действия экран не переключают
-      state.view = act[1];
-      render();
-      // БАГ: снимаем только display, opacity остаётся 0 — панель невидима
-      var v = overlay.querySelector('.' + CFG.ns + '-view[data-view="' + state.view + '"]');
-      if (v) { v.style.display = 'block'; }
+      // БАГ: состояние не трогаем, класс дописываем прямо в DOM.
+      var i2, tabs = overlay.querySelectorAll('.' + CFG.ns + '-tab');
+      for (i2 = 0; i2 < tabs.length; i2++) { tabs[i2].classList.remove('active'); }
+      b.classList.add('active');
+      var views = overlay.querySelectorAll('.' + CFG.ns + '-view');
+      for (i2 = 0; i2 < views.length; i2++) {
+        views[i2].classList.toggle('active', views[i2].getAttribute('data-view') === act[1]);
+      }
     });
+    }
+
     render();
   } catch (err) {
     var h2 = document.querySelectorAll('[_echarts_instance_]');

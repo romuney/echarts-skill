@@ -1,13 +1,12 @@
 // ФИКСТУРА для `node smoke.mjs --selftest`. В Proteus не вставляется.
 //
-// СЛОМАННОЕ ПЕРЕКЛЮЧЕНИЕ. Отличие от tabs-ok ровно одно: активной панелью
-// в разметке ВСЕГДА остаётся первая, а обработчик показывает нужную снятием
-// одного лишь display — при том что панель спрятана ДВУМЯ свойствами
-// (display:none + opacity:0). Кнопка подсвечивается, экран не меняется.
-//
-// Так выглядит жалоба «переключалка не работает». E7 такой виджет пропускал:
-// разметка после клика ДЕЙСТВИТЕЛЬНО другая (сменился класс active), а экран
-// прежний. Ожидание самопроверки: E15 = FAIL.
+// БАГ ЗАШИТ НАМЕРЕННО (RETRO 64): разметка ставит класс через префикс
+// (CFG.ns + '-active'), а правило в CSS написано без префикса (.active).
+// В DOM это два разных класса, и они не встретятся никогда: панель, которую
+// показывает .<ns>-view.active, не покажется ни разу. Синтаксис при этом чист,
+// S6 молчит (класс склеен конкатенацией, а не написан литералом внутри
+// class="..."), а браузерные проверки меряют экран после клика, когда класс
+// уже дописал обработчик. Ловит только validate.py S6b.
 
 // ---------- БЛОК 1: CFG ----------
 var CFG = {
@@ -94,14 +93,14 @@ function buildHTML() {
   h.push('<div class="' + P + '-tabs" role="tablist">');
   for (i = 0; i < VIEWS.length; i++) {
     h.push('<button type="button" role="tab" class="' + P + '-tab'
-      + (state.view === VIEWS[i] ? ' active' : '') + '" aria-selected="'
+      + (state.view === VIEWS[i] ? ' ' + P + '-active' : '') + '" aria-selected="'
       + (state.view === VIEWS[i] ? 'true' : 'false')
       + '" data-action="tab:' + VIEWS[i] + '">Вкладка ' + VIEWS[i].toUpperCase() + '</button>');
   }
   h.push('</div>');
   for (i = 0; i < VIEWS.length; i++) {
-    h.push('<div class="' + P + '-view' + (VIEWS[i] === 'a' ? ' active' : '')
-      + '" data-view="' + VIEWS[i] + '">');   // БАГ: всегда первая
+    h.push('<div class="' + P + '-view' + (VIEWS[i] === state.view ? ' ' + P + '-active' : '')
+      + '" data-view="' + VIEWS[i] + '">');
     h.push('<span data-tip="row:' + VIEWS[i] + '">Экран ' + VIEWS[i].toUpperCase()
       + ': строк ' + fmtInt(MODEL.sum) + ', метрика ' + VIEWS[i] + '</span>');
     h.push('</div>');
@@ -174,9 +173,6 @@ function buildHTML() {
       if (act[0] !== 'tab') { return; }   // действия экран не переключают
       state.view = act[1];
       render();
-      // БАГ: снимаем только display, opacity остаётся 0 — панель невидима
-      var v = overlay.querySelector('.' + CFG.ns + '-view[data-view="' + state.view + '"]');
-      if (v) { v.style.display = 'block'; }
     });
     render();
   } catch (err) {

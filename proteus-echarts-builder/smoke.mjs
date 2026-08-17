@@ -17,11 +17,16 @@
 //   node smoke.mjs <path>.chart.js --vs <path>.html   # сверка с макетом
 //   node smoke.mjs <path>.chart.js --quiet            # только проблемы + итог
 //   node smoke.mjs <path>.chart.js --keep             # не удалять временный стенд
+//   node smoke.mjs <path>.chart.js --accept 'E7=почему это ложная тревога'
 //
 // ДАННЫЕ. Берутся из <name>.mock.json рядом с чартом, либо из --mock,
 // либо генерируются автоматически из CFG.fields. Автомок — грубый: он проверяет
 // живость интерфейса, а не правильность цифр. Реальные значения кладите
 // в <name>.mock.json (массив объектов в точной форме выдачи SQL).
+// Значения категорий автомок берёт из CFG.order, если поле там объявлено:
+// иначе он подставит 'k1'/число, разметка не совпадёт с ним ни одной группой,
+// половина виджета выйдет нулевой — и проверки тултипов и SVG уедут в WARN/N-A
+// на пустом месте (RETRO 66).
 //
 // КОД ВОЗВРАТА: 0 — нет FAIL, 1 — есть FAIL, 2 — ошибка запуска.
 // ============================================================================
@@ -33,14 +38,20 @@ import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const R = [];
+// Оспоренный FAIL остаётся видимой строкой отчёта вместе с причиной: это способ
+// сообщить о ложной тревоге, а не способ закрыть сдачу (SKILL.md, ОСПАРИВАНИЕ).
+const ACCEPTED = new Map();
 const pass = (id, m) => R.push([id, 'PASS', m]);
-const fail = (id, m) => R.push([id, 'FAIL', m]);
+const fail = (id, m) => R.push(ACCEPTED.has(id)
+  ? [id, 'ОСПОР', m + '  ||  ОСПОРЕНО: ' + ACCEPTED.get(id)]
+  : [id, 'FAIL', m]);
 const warn = (id, m) => R.push([id, 'WARN', m]);
 const skip = (id, m) => R.push([id, 'N/A', m]);
 const check = (id, ok, good, bad, asWarn) =>
   ok ? pass(id, good) : (asWarn ? warn(id, bad) : fail(id, bad));
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const short = (s, n) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s));
 
 // ── аргументы ────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -50,6 +61,17 @@ const paths = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === '--mock' || a === '--vs' || a === '--shots') { opts[a.slice(2)] = argv[++i]; continue; }
+  if (a === '--accept' || a.startsWith('--accept=')) {
+    const val = a === '--accept' ? (argv[++i] || '') : a.slice('--accept='.length);
+    const eq = val.indexOf('=');
+    const id = eq < 0 ? '' : val.slice(0, eq).trim();
+    const why = eq < 0 ? '' : val.slice(eq + 1).trim();
+    if (!id || why.length < 12) {
+      console.log('--accept ' + val + ' — нужна форма КОД=причина, и причина словами,'
+        + ' не короче 12 символов. Оспаривание не применено.');
+    } else ACCEPTED.set(id, why);
+    continue;
+  }
   if (a.startsWith('--')) { flags.add(a); continue; }
   paths.push(a);
 }
@@ -179,11 +201,40 @@ function extractFieldNames(src) {
   return out;
 }
 
+// CFG.order — единственное место, где чарт объявляет РЕАЛЬНЫЕ значения
+// категорий: правило 14 требует выписывать туда порядок из макета. Без них
+// автомок подставит 'k1' или число, ни одна группа в buildModel не совпадёт,
+// половина виджета выйдет нулевой — и тултипы с SVG уедут в WARN/N-A не потому,
+// что сломаны, а потому что мерить было нечего (RETRO 66).
+function extractOrder(src) {
+  const m = /\border\s*:\s*\{/.exec(src);
+  if (!m) return {};
+  const open = src.indexOf('{', m.index + m[0].length - 1);
+  let depth = 0, end = -1;
+  for (let j = open; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}') { depth--; if (!depth) { end = j; break; } }
+  }
+  if (end < 0) return {};
+  const out = {};
+  const body = src.slice(open + 1, end);
+  for (const mm of body.matchAll(/([\w'"]+)\s*:\s*\[([^\]]*)\]/g)) {
+    const key = mm[1].replace(/['"]/g, '');
+    const vals = [...mm[2].matchAll(/'([^']*)'|"([^"]*)"/g)]
+      .map((x) => (x[1] !== undefined ? x[1] : x[2]))
+      .filter((s) => s !== '');
+    if (vals.length) out[key] = vals;
+  }
+  return out;
+}
+
 const NUMS = [13, 10, 9, 7, 6, 5, 4, 3, 2, 1];
 const COLORS = ['#f2a8b8', '#c9a2ee', '#8fd3c7', '#f6c177'];
 const DATES = ['2026-07-01', '2026-06-01', '2026-05-01'];
 
-function mockValue(name, idx, row) {
+function mockValue(name, idx, row, order) {
+  const list = order && (order[name] || order[name.toLowerCase()]);
+  if (list) return list[row % list.length];
   const n = name.toLowerCase();
   if (/colou?r/.test(n)) return COLORS[(idx + row) % COLORS.length];
   if (/(_dt$|date|month|period|_day|time)/.test(n)) return DATES[row % DATES.length];
@@ -194,11 +245,11 @@ function mockValue(name, idx, row) {
   return Math.max(1, NUMS[idx % NUMS.length] - row);
 }
 
-function autoMock(fieldNames, rows) {
+function autoMock(fieldNames, rows, order) {
   const out = [];
   for (let r = 0; r < rows; r++) {
     const o = {};
-    fieldNames.forEach((f, i) => { o[f] = mockValue(f, i, r); });
+    fieldNames.forEach((f, i) => { o[f] = mockValue(f, i, r, order); });
     out.push(o);
   }
   return out;
@@ -335,6 +386,10 @@ const PROBE = `(function () {
           label: (n.getAttribute('data-tip') || n.getAttribute('data-kind')
                   || n.getAttribute('data-action') || '?')
                  + (n.getAttribute('data-key') ? ':' + n.getAttribute('data-key') : ''),
+          // data-action — это «сюда кликают», а не «здесь тултип». Требовать
+          // подсказку от кнопки «Экспорт» нельзя: получится вечный WARN,
+          // который нечем закрыть (RETRO 66).
+          tipish: n.getAttribute('data-tip') !== null || n.getAttribute('data-kind') !== null,
           cx: Math.round(r.left + r.width / 2), cy: Math.round(r.top + r.height / 2),
           w: Math.round(r.width), h: Math.round(r.height),
           tag: n.tagName.toLowerCase()
@@ -496,7 +551,7 @@ async function newPage(browser, errs) {
   return page;
 }
 
-async function probeTooltips(page, prefix, rootSel) {
+async function probeTooltips(page, prefix, rootSel, thin) {
   await page.evaluate(PROBE);
   const triggers = await page.evaluate(
     (s) => window.__smoke.triggers(s), rootSel || null);
@@ -547,16 +602,24 @@ async function probeTooltips(page, prefix, rootSel) {
   }
 
   const visible = results.filter((r) => r.tip).length;
-  const dead = results.filter((r) => !r.tip).map((r) => r.t.label);
+  // Молчат только те, от кого подсказка ОЖИДАЛАСЬ: носители data-tip/data-kind.
+  const dead = results.filter((r) => !r.tip && r.t.tipish !== false).map((r) => r.t.label);
 
   check(prefix + '1', visible > 0,
     'тултип появляется при наведении (' + visible + ' из ' + used.length + ' триггеров)',
     'НИ ОДИН из ' + used.length + ' триггеров не показал видимый тултип. '
       + 'Узел мог отрисоваться, но быть прозрачным/нулевого размера/без текста');
 
+  // Метку режем: в data-tip часто лежит JSON-пейлоад целиком, и сообщение
+  // на три экрана невозможно прочитать.
   check(prefix + '2', dead.length === 0,
     'тултип показан на всех проверенных триггерах',
-    'без тултипа: ' + dead.slice(0, 6).join(', '), true);
+    'без тултипа: ' + dead.slice(0, 6).map((s) => short(s, 34)).join(', ')
+      + (thin ? '. Мок заполнен вслепую: ' + short(thin, 70) + ' — по таким '
+        + 'колонкам группы в buildModel не совпадут, элемент выйдет нулевого '
+        + 'размера, и наводиться будет не на что. Прежде чем чинить виджет, '
+        + 'выпиши категории в CFG.order или положи <name>.mock.json (RETRO 66)'
+        : ''), true);
 
   // T3/T4 имеют смысл, только если хоть что-то показалось: иначе они «проходят»
   // на пустом месте и создают ложную зелёную картину.
@@ -630,6 +693,7 @@ async function main() {
       return 2;
     }
   }
+  let mockThin = '';
   if (!rows) {
     const fieldNames = extractFieldNames(src);
     if (!fieldNames.length) {
@@ -637,8 +701,21 @@ async function main() {
         + 'Заполни CFG.fields или положи ' + path.basename(base) + '.mock.json');
       return 2;
     }
-    rows = autoMock(fieldNames, 2);
-    mockSource = 'автомок из CFG.fields (' + fieldNames.length + ' колонок)';
+    const order = extractOrder(src);
+    const named = fieldNames.filter((f) => order[f] || order[f.toLowerCase()]);
+    const depth = Math.max(2, ...named.map((f) => (order[f] || order[f.toLowerCase()]).length));
+    rows = autoMock(fieldNames, Math.min(12, depth), order);
+    mockSource = 'автомок из CFG.fields (' + fieldNames.length + ' колонок, строк '
+      + rows.length + ')'
+      + (named.length ? '; значения из CFG.order: ' + named.join(', ') : '');
+    // Какие колонки автомок заполнил вслепую. Знать, какие из них
+    // КАТЕГОРИАЛЬНЫ, скрипт не может — это и есть смысл CFG.order.
+    const blind = fieldNames.filter((f) => !order[f] && !order[f.toLowerCase()]);
+    if (blind.length) {
+      mockThin = blind.length + ' колонок вне CFG.order (' + blind.slice(0, 4).join(', ')
+        + (blind.length > 4 ? ', …' : '') + ')';
+      mockSource += '; вслепую: ' + mockThin;
+    }
   }
   if (!Array.isArray(rows) || !rows.length) {
     console.log('Мок пуст — нужен непустой массив строк.');
@@ -688,7 +765,7 @@ async function main() {
     // ── тултипы ──────────────────────────────────────────────────────────────
     const tipNodes = await page.evaluate(() => window.__smoke.tipNodes());
     const t = tipNodes > 0
-      ? await probeTooltips(page, 'ET', '.' + ns + '-overlay')
+      ? await probeTooltips(page, 'ET', '.' + ns + '-overlay', mockThin)
       : (skip('ET1', 'узлов тултипа на странице нет — в этом графике тултипа не предусмотрено'),
          { triggers: [], visible: 0, results: [] });
 
@@ -748,6 +825,7 @@ async function main() {
     // и тот же экран — переключение мёртвое.
     const rootSel = '.' + ns + '-overlay';
     const groups = await page.evaluate((s) => window.__smoke.switchers(s), rootSel);
+    let switchProven = false;
     if (!groups.length) {
       skip('E15', 'групп-переключалок нет (нужны соседние контролы с role=tab / '
         + 'aria-selected / data-view / классом выбора)');
@@ -787,6 +865,7 @@ async function main() {
         skip('E15', 'до контролов не удалось дотянуться кликом: ' + unreachable.join('; '));
         skip('E16', 'переключение не выполнялось');
       } else {
+      switchProven = dead.length === 0;
       check('E15', dead.length === 0, 'переключалки меняют экран ('
         + groups.slice(0, 3).map((g) => g.n + ' шт.').join(', ') + ')',
         'все вкладки группы показывают ОДИН И ТОТ ЖЕ экран: ' + dead.join('; ')
@@ -831,8 +910,18 @@ async function main() {
     // ── E7: клик пересобирает разметку ───────────────────────────────────────
     // Ловит «фиктивный render()», который не вызывает buildHTML(): интерактив
     // формально есть, но на экране после клика ничего не меняется (RETRO 45).
+    // E7 кликает по ТУЛТИПНЫМ якорям ([data-tip]/[data-kind]/[data-action]),
+    // а вкладки помечаются data-view и в его выборку не попадают вовсе. На
+    // виджете, где тултипные якоря кликать и не полагается, он давал вечный
+    // WARN «ни один клик не изменил разметку» — рядом с зелёным E15 в том же
+    // прогоне. Непроходимая проверка хуже отсутствующей: агент либо крутится
+    // вокруг неё, либо начинает списывать в «с этим ок» ВСЕ жёлтые строки —
+    // вместе с настоящими (RETRO 66). Переключение доказал E15 — здесь N/A.
     const clickable = t.triggers.filter((x) => x.tag === 'button' || /:/.test(x.label));
-    if (clickable.length) {
+    if (switchProven) {
+      skip('E7', 'перерисовка по клику доказана на переключалках (E15) — '
+        + 'отдельная проверка тултипных якорей не нужна');
+    } else if (clickable.length) {
       let changed = false;
       const before = await page.evaluate((n) => window.__smoke.overlayHTML(n), ns);
       for (const c of clickable.slice(0, 3)) {
@@ -857,6 +946,24 @@ async function main() {
     }
 
     // ── B8: перезапуск скрипта (Proteus делает это на каждой перерисовке) ────
+    // Перед перезапуском ЯВНО уводим виджет из состояния по умолчанию: без
+    // этого перезапуск не проверяет ничего, кроме числа overlay (E18/E19).
+    let probe = null;
+    if (groups.length) {
+      const g = groups[0];
+      const mi = Math.min(1, g.n - 1);
+      const pos = await page.evaluate(([s, gi, m]) => window.__smoke.switcherAt(s, gi, m),
+        [rootSel, g.i, mi]);
+      if (pos) {
+        await page.mouse.click(pos.cx, pos.cy);
+        await wait(240);
+        probe = {
+          gi: g.i, mi, n: g.n, label: g.labels[mi] || String(mi),
+          sig: await page.evaluate((s) => window.__smoke.screen(s), rootSel),
+        };
+      }
+    }
+
     const errsBefore = errs.length;
     await page.addScriptTag({ path: chartPath });
     await wait(400);
@@ -869,6 +976,59 @@ async function main() {
     check('E9', tipNodes === 0 || tipNodes2 <= tipNodes,
       'узел тултипа не дублируется при перезапуске',
       'узлов тултипа было ' + tipNodes + ', стало ' + tipNodes2 + ' — старый не удаляется');
+
+    // ── E18/E19: перезапуск переживают и ВЫБОР, и ИНТЕРАКТИВ ─────────────────
+    // Proteus перезапускает скрипт на каждой перерисовке — ради этого в скилле
+    // и заведён window.__pvtState. До сих пор E8 мерил только число overlay,
+    // и два самых дорогих бага проходили насквозь (RETRO 65, Test7):
+    //   1) выбор вкладки лежал не в state, а прямо в DOM (обработчик дописывал
+    //      класс руками) — после перерисовки виджет молча возвращался на первую
+    //      вкладку, стирая то, что выбрал пользователь;
+    //   2) слушатели вешались под флагом state.bound, а overlay пересоздавался —
+    //      после перерисовки НИ ОДИН обработчик не навешивался, и виджет
+    //      становился картинкой: ни тултипов, ни вкладок, ни единой ошибки
+    //      в консоли.
+    // Обе проверки идут ПОСЛЕ повторной инъекции скрипта и мерят живой экран.
+    if (!probe) {
+      skip('E18', 'переключалок нет — переживание выбора не проверялось');
+      skip('E19', 'переключалок нет — живость интерактива после перезапуска не проверялась');
+    } else {
+      const sigAfter = await page.evaluate((s) => window.__smoke.screen(s), rootSel);
+      check('E18', sigAfter === probe.sig,
+        'выбор «' + probe.label + '» пережил перезапуск скрипта',
+        'до перезапуска был выбран «' + probe.label + '», после — экран другой. '
+          + 'Proteus перерисовывает виджет на каждый чих, и выбор пользователя '
+          + 'сбрасывается у него на глазах. Состояние обязано лежать в '
+          + 'window.__pvtState[CFG.ns] и читаться в buildHTML(), а не дописываться '
+          + 'классом в DOM из обработчика (RETRO 2, 65)');
+
+      if (!switchProven) {
+        skip('E19', 'переключение не доказано и до перезапуска (E15) — мерить нечего');
+      } else {
+        const sigs = [];
+        for (const mi of [0, probe.mi]) {
+          const pos = await page.evaluate(([s, gi, m]) => window.__smoke.switcherAt(s, gi, m),
+            [rootSel, probe.gi, mi]);
+          if (!pos) continue;
+          await page.mouse.click(pos.cx, pos.cy);
+          await wait(240);
+          sigs.push(await page.evaluate((s) => window.__smoke.screen(s), rootSel));
+        }
+        if (sigs.length < 2) {
+          skip('E19', 'до контролов не удалось дотянуться кликом после перезапуска');
+        } else {
+          check('E19', sigs[0] !== sigs[1],
+            'интерактив жив после перезапуска скрипта',
+            'до перезапуска переключалки работали (E15), после — клики ничего '
+              + 'не меняют: виджет стал картинкой. Обычная причина — слушатели '
+              + 'навешены под флагом из state: флаг перезапуск переживает, '
+              + 'а overlay пересоздаётся, и новый остаётся без обработчиков. '
+              + 'Вешай addEventListener безусловно, как в шаблоне: старый overlay '
+              + 'удалён вместе со своими слушателями, дублей не будет '
+              + '(RETRO 65, validate.py S21)');
+        }
+      }
+    }
 
     // ── B10: ресайз ──────────────────────────────────────────────────────────
     const measure = () => page.evaluate((n) => {
@@ -917,12 +1077,14 @@ async function main() {
     const svgOut = await page.evaluate((n) => {
       var root = document.querySelector('.' + n + '-root') || document.body;
       var out = [];
-      var seen = 0;
+      var seen = 0, total = 0, boxed = 0;
       var svgs = root.querySelectorAll('svg');
+      total = svgs.length;
       for (var i = 0; i < svgs.length; i++) {
         var s = svgs[i];
         var vb = s.viewBox && s.viewBox.baseVal;
         if (!vb || !vb.width || !vb.height) continue;
+        boxed++;
         var bb;
         try { bb = s.getBBox(); } catch (e) { continue; }
         if (!bb || (!bb.width && !bb.height)) continue;
@@ -939,13 +1101,27 @@ async function main() {
             + Math.round(vb.height) + '): ' + over.join(', ') + ' px');
         }
       }
-      return seen ? out : null;      // не «уместилось», а «мерить было нечего»
+      // Возвращаем ещё и ПОЧЕМУ не мерили: «SVG нет», «есть, но без viewBox»
+      // и «есть, но на этих данных пустой» — три разных вывода. Раньше все
+      // три печатались как «SVG с viewBox в разметке нет», и агент шёл искать
+      // отсутствующий SVG в файле, где он есть (RETRO 66).
+      return { over: out, seen: seen, total: total, boxed: boxed };
     }, ns);
-    if (svgOut === null) {
-      skip('E14', 'SVG с viewBox в разметке нет — обрезание не мерилось');
+    if (!svgOut.total) {
+      skip('E14', 'SVG в разметке нет — обрезание не мерилось');
+    } else if (!svgOut.boxed) {
+      warn('E14', 'SVG в разметке есть (' + svgOut.total + ' шт.), но ни у одного нет '
+        + 'viewBox — обрезание измерить нечем, а без viewBox SVG и не тянется');
+    } else if (!svgOut.seen) {
+      skip('E14', 'SVG с viewBox есть (' + svgOut.boxed + ' шт.), но на этих данных '
+        + 'они пустые: getBBox() ничего не вернул, мерить нечего'
+        + (mockThin ? '. Похоже на дефект мока: ' + short(mockThin, 70)
+          + ', группы в buildModel не совпали (RETRO 66)'
+          : '. Положи <name>.mock.json с реальными строками'));
     } else {
-      check('E14', svgOut.length === 0, 'содержимое SVG умещается в viewBox',
-        'содержимое вылезает за viewBox и обрезается: ' + svgOut.slice(0, 3).join('; ')
+      check('E14', svgOut.over.length === 0, 'содержимое SVG умещается в viewBox ('
+        + svgOut.seen + ' шт.)',
+        'содержимое вылезает за viewBox и обрезается: ' + svgOut.over.slice(0, 3).join('; ')
           + ' — шаг или масштаб повторяющегося блока накапливают ошибку '
           + '(RETRO 55). Сними формулу с ДВУХ копий макета и проверь '
           + 'на ПОСЛЕДНЕЙ');
@@ -1045,7 +1221,8 @@ async function main() {
   const fails = R.filter(([, s]) => s === 'FAIL').length;
   const warns = R.filter(([, s]) => s === 'WARN').length;
   const nas = R.filter(([, s]) => s === 'N/A').length;
-  const mark = { PASS: 'v', FAIL: 'X', WARN: '!', 'N/A': '-' };
+  const disp = R.filter(([, s]) => s === 'ОСПОР').length;
+  const mark = { PASS: 'v', FAIL: 'X', WARN: '!', 'N/A': '-', 'ОСПОР': '?' };
 
   console.log('\n' + chartPath);
   console.log('данные: ' + mockSource);
@@ -1054,12 +1231,24 @@ async function main() {
   for (const [id, st, msg] of R) {
     if (quiet && st === 'PASS') continue;
     shown++;
-    console.log(' ' + mark[st] + '  ' + id.padEnd(w) + '  ' + st.padEnd(4) + '  ' + msg);
+    console.log(' ' + mark[st] + '  ' + id.padEnd(w) + '  ' + st.padEnd(5) + '  ' + msg);
   }
   if (quiet && !shown) console.log(' всё чисто');
   console.log('-'.repeat(72));
-  console.log('Итог: ' + (R.length - fails - warns - nas) + '/' + R.length
-    + ' PASS, ' + warns + ' WARN, ' + nas + ' N/A, ' + fails + ' FAIL');
+  console.log('Итог: ' + (R.length - fails - warns - nas - disp) + '/' + R.length
+    + ' PASS, ' + warns + ' WARN, ' + nas + ' N/A, ' + disp + ' ОСПОР, ' + fails + ' FAIL');
+  // Только СВОИ коды: check.py передаёт --accept обоим чекерам, а всё,
+  // что не начинается с E, принадлежит validate.py.
+  const unused = [...ACCEPTED.keys()].filter((k) => k.startsWith('E')
+    && !R.some(([id, s]) => id === k && s === 'ОСПОР'));
+  if (unused.length) {
+    console.log('\n--accept на кодах, которые НЕ падали: ' + unused.join(', ')
+      + ' — проверь ID, оспаривание к ним не применилось.');
+  }
+  if (disp) {
+    console.log('\nОСПОРЕНО проверок: ' + disp + '. Это не «пройдено»: каждую строку'
+      + '\nвыпиши в NOTES §6 и назови пользователю в финальном ответе словами.');
+  }
   if (fails) console.log('\nСДАВАТЬ НЕЛЬЗЯ: график не работает в браузере, а не «на вид».');
   if (keep) console.log('Стенд оставлен: ' + tmp);
   return fails ? 1 : 0;

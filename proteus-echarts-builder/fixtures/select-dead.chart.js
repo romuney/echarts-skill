@@ -20,11 +20,33 @@ window.__pvtState = window.__pvtState || {};
 window.__pvtState[CFG.ns] = window.__pvtState[CFG.ns] || { view: 'a', bound: false };
 var state = window.__pvtState[CFG.ns];
 function esc(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 }
-function num(v) { var n = Number(v); return isFinite(n) ? n : 0; }
-function toDate(v) { return v == null ? null : new Date(num(v)); }
+function num(v) {
+  if (v === null || v === undefined || v === '') return null;
+  if (typeof v === 'number') return isNaN(v) ? null : v;
+  var s = String(v).replace(/[\s ]/g, '');
+  // '1,5' -> дробная запятая; '1,234.5' -> запятая это разряды.
+  if (s.indexOf(',') > -1 && s.indexOf('.') === -1) s = s.replace(/,/g, '.');
+  else s = s.replace(/,/g, '');
+  var n = Number(s);
+  return isNaN(n) ? null : n;
+}
+function toDate(raw) {
+  if (raw === null || raw === undefined || raw === '') return null;
+  var s = String(raw).trim(), d = null;
+  if (/^\d{11,}$/.test(s)) { var ms = Number(s); d = new Date(ms > 1e12 ? ms : ms * 1000); }
+  else if (/^\d{10}$/.test(s)) d = new Date(Number(s) * 1000);
+  else {
+    var m = /^(\d{4})-(\d{2})(?:-(\d{2}))?/.exec(s);
+    if (m) return { y: +m[1], m: +m[2] - 1, d: m[3] ? +m[3] : 1 };
+    d = new Date(s);
+  }
+  if (!d || isNaN(d.getTime())) return null;
+  return { y: d.getUTCFullYear(), m: d.getUTCMonth(), d: d.getUTCDate() };
+}
 
 // ---------- БЛОК 3: buildModel ----------
 function buildModel() {
@@ -130,26 +152,27 @@ function buildHTML() {
     }
     function renderTip(el) { showTip(esc(getTip(el)), el.getBoundingClientRect()); }
 
-    if (!state.bound) {
-      state.bound = true;
-      overlay.addEventListener('mouseover', function (e) {
-        var t = e.target.closest ? e.target.closest('[data-tip]') : null;
-        if (t) { renderTip(t); }
-      });
-      overlay.addEventListener('mouseout', function (e) {
-        var t = e.target.closest ? e.target.closest('[data-tip]') : null;
-        if (!t || t.contains(e.relatedTarget)) { return; }
-        hideTip();
-      });
-      overlay.addEventListener('click', function (e) {
-        var b = e.target.closest ? e.target.closest('[data-action]') : null;
-        if (!b) { return; }
-        var act = b.getAttribute('data-action').split(':');
-        if (act[0] !== 'tab') { return; }   // действия экран не переключают
-        state.view = act[1];
-        render();
-      });
-    }
+    // Слушатели вешаются БЕЗУСЛОВНО: overlay только что создан заново,
+    // а старый удалён вместе со своими обработчиками. Флаг из state
+    // переживает перезапуск скрипта и оставил бы новый overlay
+    // без единого слушателя (RETRO 65, validate.py S21).
+    overlay.addEventListener('mouseover', function (e) {
+      var t = e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (t) { renderTip(t); }
+    });
+    overlay.addEventListener('mouseout', function (e) {
+      var t = e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (!t || t.contains(e.relatedTarget)) { return; }
+      hideTip();
+    });
+    overlay.addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-action]') : null;
+      if (!b) { return; }
+      var act = b.getAttribute('data-action').split(':');
+      if (act[0] !== 'tab') { return; }   // действия экран не переключают
+      state.view = act[1];
+      render();
+    });
     render();
   } catch (err) {
     var h2 = document.querySelectorAll('[_echarts_instance_]');
